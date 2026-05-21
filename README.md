@@ -5,7 +5,7 @@ defragmenter and raw-FDC head diagnostic for Windows 9x (95/98/Me).
 Licensed under the GNU GPL v3, see `LICENSE`. Report bugs to
 <k@iczelia.net>.
 
-![screenshot](screenshot.png)
+![screenshot](gui.png)
 
 ## Test modes
 
