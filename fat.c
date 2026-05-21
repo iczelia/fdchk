@@ -465,8 +465,7 @@ done:
   return 0;
 }
 
-/*  ----------------------------------------------------------------------
-    Recovery - copy out files, zero-filling bad regions, write a log.  */
+/*  Recovery - copy out files, zero-filling bad regions, write a log.  */
 
 #define MAX_REC_DEPTH 16
 
