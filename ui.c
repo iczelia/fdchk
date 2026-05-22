@@ -616,7 +616,9 @@ void on_done(HWND hWnd) {
   EnableWindow(G.hRecover,    G.bad_n > 0);
   InvalidateRect(hWnd, NULL, FALSE);
 
-  /*  Defrag reports its own outcome from the G.defrag_* fields.  */
+  /*  Defrag reports its own outcome from the G.defrag_* fields.
+      defrag_rc: 0 = done, 1 = aborted with the disk untouched,
+      -1 = a write failed and the disk may be inconsistent.  */
   if (G.mode == MODE_DEFRAG) {
     char msg[300];
     if (G.defrag_rc == 0) {
@@ -629,15 +631,15 @@ void on_done(HWND hWnd) {
           "Elapsed:               %s",
           G.defrag_moved, G.defrag_zeroed, els);
       MessageBoxA(hWnd, msg, "Defragmenter", MB_OK | MB_ICONINFORMATION);
-    } else if (G.abort_req) {
+    } else if (G.defrag_rc == 1) {
       MessageBoxA(hWnd,
-          "Defrag aborted by user.\r\n\r\n"
-          "If the abort happened during the write phase the disk may be\r\n"
-          "inconsistent - run Check FS.",
+          "Defrag did not complete.\r\n\r\n"
+          "The disk was left exactly as it was - nothing was written.\r\n"
+          "(A disk with unreadable sectors cannot be safely defragmented.)",
           "Defragmenter", MB_OK | MB_ICONWARNING);
     } else {
       MessageBoxA(hWnd,
-          "Defrag failed.\r\n\r\n"
+          "Defrag failed during the write phase.\r\n\r\n"
           "The disk may be inconsistent - run Check FS to verify.",
           "Defragmenter", MB_OK | MB_ICONERROR);
     }
@@ -952,9 +954,32 @@ void do_logs(HWND parent) {
 
 /*  Command flows: Format, Defrag, Recover.  */
 
+/*  fdchk cannot safely raw-write the volume it is itself running from:
+    Windows holds fdchk.exe open, so the volume can never be locked
+    exclusively, and the OS would write its cached FAT/directory back over
+    our new layout.  Returns 1 if drive (0=A, 1=B) is fdchk's own.  */
+static int running_from_drive(int drive) {
+  char exe[MAX_PATH];
+  GetModuleFileNameA(NULL, exe, MAX_PATH);
+  char c = exe[0];
+  if (c >= 'a' && c <= 'z') c -= 32;
+  return c == 'A' + drive;
+}
+
 void do_format_flow(HWND hWnd) {
   int drive = SendMessageA(G.hDriveB, BM_GETCHECK, 0, 0) == BST_CHECKED
             ? 1 : 0;
+  if (running_from_drive(drive)) {
+    char m[320];
+    wsprintfA(m,
+        "Cannot format drive %c: - fdchk is running from it.\r\n\r\n"
+        "Windows keeps fdchk.exe open, so the volume cannot be locked\r\n"
+        "exclusively and the format would not take cleanly.\r\n\r\n"
+        "Run fdchk from your hard disk to format a floppy.",
+        'A' + drive);
+    MessageBoxA(hWnd, m, "Format Floppy", MB_OK | MB_ICONERROR);
+    return;
+  }
   char msg[400];
   wsprintfA(msg,
       "Format drive %c: as FAT12?\r\n\r\n"
@@ -979,13 +1004,9 @@ void do_format_flow(HWND hWnd) {
     disk_close(&dh);
     return;
   }
-  /*  Lock with the level 2 -> 1 -> 0 ladder: VWIN32 is fussy about who
-      else holds the volume open (Explorer views, DIR prompts).  */
-  int lock_rc = -1;
-  for (int lvl = 2; lvl >= 0; --lvl) {
-    lock_rc = disk_lock(&dh, lvl);
-    if (lock_rc == 0) break;
-  }
+  /*  Full exclusive lock (level 0 first, then escalate).  A failure
+      means something else holds the volume open - refuse to format.  */
+  int lock_rc = disk_lock(&dh, 3);
   if (lock_rc < 0) {
     char err[200];
     wsprintfA(err,
@@ -1021,6 +1042,18 @@ void do_defrag_flow(HWND hWnd) {
   int drive = (G.has_b && !G.has_a) ? 1
             : (SendMessageA(G.hDriveB, BM_GETCHECK, 0, 0) == BST_CHECKED
                ? 1 : 0);
+  if (running_from_drive(drive)) {
+    char m[320];
+    wsprintfA(m,
+        "Cannot defragment drive %c: - fdchk is running from it.\r\n\r\n"
+        "Windows keeps fdchk.exe open, so the volume cannot be locked\r\n"
+        "exclusively; its cached directory would be written back over the\r\n"
+        "new layout and corrupt every file.\r\n\r\n"
+        "Copy fdchk.exe to your hard disk and run it from there.",
+        'A' + drive);
+    MessageBoxA(hWnd, m, "Defragment Floppy", MB_OK | MB_ICONERROR);
+    return;
+  }
   char msg[400];
   wsprintfA(msg,
       "Defragment drive %c:?\r\n\r\n"

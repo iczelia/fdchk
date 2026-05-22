@@ -24,12 +24,13 @@
 #include "fdchk.h"
 
 typedef struct {
-  DiskHandle * dh;
   BYTE * fat;          /*  original FAT  */
   BYTE * new_fat;      /*  FAT being built  */
   BYTE * fixed;        /*  [n_total]: clusters that must not move (bad)  */
   WORD * plan;         /*  plan[T]    = original cluster now placed at T  */
   WORD * new_pos;      /*  new_pos[O] = new cluster for original O  */
+  BYTE * src;          /*  in-memory image of the whole data area  */
+  int    cluster_bytes;
   int    n_total;
   int    next_target;  /*  next eligible (non-fixed) cluster to assign  */
   BYTE * root_buf;     /*  root directory image, modified in place  */
@@ -83,19 +84,18 @@ static int defrag_count_chain(const BYTE * fat, int start, int cap) {
   return n;
 }
 
-/*  Read a directory's clusters into a fresh buffer; caller LocalFree's.  */
+/*  Copy a directory's chain out of the in-memory data image into a fresh
+    contiguous buffer; caller LocalFree's.  */
 static BYTE * defrag_read_subdir(DefragCtx * c, WORD start, int * out_bytes) {
   int n_clu = defrag_count_chain(c->fat, start, c->n_total);
   if (n_clu == 0) { *out_bytes = 0; return NULL; }
-  int bytes = n_clu * G.sec_per_cluster * SECTOR_SIZE;
+  int bytes = n_clu * c->cluster_bytes;
   BYTE * buf = (BYTE *) LocalAlloc(LPTR, bytes);
   if (!buf) { *out_bytes = 0; return NULL; }
   int off = 0, cl = start;
   for (int k = 0; k < n_clu; ++k) {
-    DWORD lba = cluster_to_lba(cl);
-    if (disk_read(c->dh, lba, (WORD) G.sec_per_cluster, buf + off) != 0)
-      memzero(buf + off, G.sec_per_cluster * SECTOR_SIZE);
-    off += G.sec_per_cluster * SECTOR_SIZE;
+    memcpy(buf + off, c->src + (cl - 2) * c->cluster_bytes, c->cluster_bytes);
+    off += c->cluster_bytes;
     WORD nx = fat12_get(c->fat, cl);
     if (nx >= 0xFF8 || nx == 0xFF7) break;
     cl = nx;
@@ -104,13 +104,13 @@ static BYTE * defrag_read_subdir(DefragCtx * c, WORD start, int * out_bytes) {
   return buf;
 }
 
-/*  Write a subdir's content back to its OLD chain positions on disk.  */
-static void defrag_write_subdir(DefragCtx * c, WORD start, const BYTE * buf) {
+/*  Store a directory's chain back into the in-memory data image, at its
+    original cluster positions.  */
+static void defrag_store_subdir(DefragCtx * c, WORD start, const BYTE * buf) {
   int off = 0, cl = start, safety = 0;
   while (cl >= 2 && cl < c->n_total && safety++ < c->n_total) {
-    disk_write(c->dh, cluster_to_lba(cl),
-               (WORD) G.sec_per_cluster, buf + off);
-    off += G.sec_per_cluster * SECTOR_SIZE;
+    memcpy(c->src + (cl - 2) * c->cluster_bytes, buf + off, c->cluster_bytes);
+    off += c->cluster_bytes;
     WORD nx = fat12_get(c->fat, cl);
     if (nx >= 0xFF8 || nx == 0xFF7) break;
     cl = nx;
@@ -222,16 +222,18 @@ static void defrag_update_dir(DefragCtx * c, WORD start_cluster,
   }
 
   if (!is_root) {
-    defrag_write_subdir(c, start_cluster, dir_buf);
+    defrag_store_subdir(c, start_cluster, dir_buf);
     LocalFree(dir_buf);
   }
 }
 
-/*  The defragmenter proper.  Interruption: between chunks we sample
-    G.abort_req, but once the write phase starts we keep going so the
-    disk does not end up half-new-data + old-FAT.  */
+/*  The defragmenter proper.  It is transactional: the whole data area is
+    read up front, and a single unreadable sector aborts the run before
+    anything is written - the disk is left untouched.  Pass 1 and pass 2
+    work only on the in-memory image; nothing reaches the disk until the
+    commit phase, after which a write error is reported as a failure.  */
 static int defrag_worker(DiskHandle * dh, int * moved_out, int * zeroed_out) {
-  int rc = -1;
+  int rc = 1;     /*  1 aborted (disk untouched); 0 ok; -1 write failed  */
   int fat_bytes      = G.fat_size * SECTOR_SIZE;
   int root_sec_count = (G.root_entries * 32 + SECTOR_SIZE - 1) / SECTOR_SIZE;
   int root_bytes     = root_sec_count * SECTOR_SIZE;
@@ -240,6 +242,7 @@ static int defrag_worker(DiskHandle * dh, int * moved_out, int * zeroed_out) {
   int data_start_sec = G.data_start_sec;
   int data_sec_count = G.total_sec - data_start_sec;
   int data_bytes     = data_sec_count * SECTOR_SIZE;
+  const WORD chunk   = 18;                    /*  one 1.44 MB track  */
 
   BYTE * fat     = (BYTE *) LocalAlloc(LPTR, fat_bytes);
   BYTE * new_fat = (BYTE *) LocalAlloc(LPTR, fat_bytes);
@@ -261,7 +264,29 @@ static int defrag_worker(DiskHandle * dh, int * moved_out, int * zeroed_out) {
   if (disk_read(dh, (DWORD) (G.reserved_sec + G.num_fats * G.fat_size),
                 (WORD) root_sec_count, root) != 0) goto done;
 
-  /*  Bad clusters and the reserved FAT[0]/FAT[1] are fixed; the new FAT
+  /*  Read the entire data area first.  A single unreadable sector aborts
+      here, before a byte is written - defragging a disk we cannot fully
+      read would scramble every file.  */
+  ui_status("Defrag: reading data area...");
+  for (DWORD lba = (DWORD) data_start_sec; lba < (DWORD) G.total_sec; ) {
+    if (G.abort_req) goto done;
+    WORD c = chunk;
+    if (lba + c > (DWORD) G.total_sec) c = (WORD) (G.total_sec - lba);
+    for (WORD i = 0; i < c; ++i) ui_set_state((int) lba + i, ST_SCANNING);
+    if (disk_read(dh, lba, c,
+                  src + (lba - data_start_sec) * SECTOR_SIZE) != 0) {
+      ui_status("Defrag aborted - disk has unreadable sectors; "
+                "nothing was changed.");
+      goto done;
+    }
+    G.current_sec = (int) lba;
+    G.scanned = (DWORD) (lba - data_start_sec);
+    PostMessageA(G.hMain, WM_APP_PROGRESS,
+                 (WPARAM) G.scanned, (LPARAM) (2 * data_sec_count));
+    lba += c;
+  }
+
+  /*  Bad clusters and the reserved FAT[0]/FAT[1] are pinned; the new FAT
       starts with the media-byte entries and the bad-cluster markers.  */
   fixed[0] = fixed[1] = 1;
   for (int n = 2; n < n_total; ++n)
@@ -272,39 +297,23 @@ static int defrag_worker(DiskHandle * dh, int * moved_out, int * zeroed_out) {
 
   DefragCtx ctx;
   memzero(&ctx, sizeof ctx);
-  ctx.dh = dh;            ctx.fat = fat;       ctx.new_fat = new_fat;
-  ctx.fixed = fixed;      ctx.plan = plan;     ctx.new_pos = new_pos;
+  ctx.fat = fat;          ctx.new_fat = new_fat;  ctx.fixed = fixed;
+  ctx.plan = plan;        ctx.new_pos = new_pos;  ctx.src = src;
+  ctx.cluster_bytes = cluster_bytes;
   ctx.n_total = n_total;  ctx.next_target = 2;
   ctx.root_buf = root;    ctx.root_bytes = root_bytes;
 
+  /*  Pass 1 + 2 plan the move and rewrite directory entries entirely in
+      the in-memory image (src / root) - no disk writes yet.  */
   ui_status("Defrag: planning new layout...");
   defrag_plan_dir(&ctx, root, G.root_entries, 0);
   if (G.abort_req) goto done;
-
   ui_status("Defrag: updating directory entries...");
   defrag_update_dir(&ctx, 0, 0, 0, 0);
   if (G.abort_req) goto done;
 
-  /*  Pass 3a: bulk-read the data area, one track at a time.  */
-  ui_status("Defrag: reading data area...");
-  const WORD chunk = 18;                      /*  one 1.44 MB track  */
-  for (DWORD lba = (DWORD) data_start_sec; lba < (DWORD) G.total_sec; ) {
-    if (G.abort_req) goto done;
-    WORD c = chunk;
-    if (lba + c > (DWORD) G.total_sec) c = (WORD) (G.total_sec - lba);
-    for (WORD i = 0; i < c; ++i) ui_set_state((int) lba + i, ST_SCANNING);
-    /*  Tolerate read errors: a bad sector stays zero in src.  */
-    disk_read(dh, lba, c, src + (lba - data_start_sec) * SECTOR_SIZE);
-    G.current_sec = (int) lba;
-    G.scanned = (DWORD) (lba - data_start_sec);
-    PostMessageA(G.hMain, WM_APP_PROGRESS,
-                 (WPARAM) G.scanned, (LPARAM) (2 * data_sec_count));
-    lba += c;
-  }
-
-  /*  Pass 3b: rearrange in memory.  dst was zeroed by LPTR, so a cluster
-      the plan never touches stays zero - the free-cluster wipe for free.  */
-  ui_status("Defrag: rearranging in memory...");
+  /*  Rearrange src -> dst.  dst was zeroed by LPTR, so a cluster the plan
+      never touches stays zero - the free-cluster wipe for free.  */
   for (int t = 2; t < n_total; ++t) {
     int dst_off = (t - 2) * cluster_bytes;
     if (fixed[t]) {
@@ -321,13 +330,18 @@ static int defrag_worker(DiskHandle * dh, int * moved_out, int * zeroed_out) {
     }
   }
 
-  /*  Pass 3c: bulk-write the new data area back, track by track.  */
+  /*  Commit: data area, then both FATs, then the root.  Past this point a
+      write error leaves the disk inconsistent (rc = -1), but the up-front
+      read pass makes a sudden write failure unlikely.  */
+  rc = -1;
   ui_status("Defrag: writing data area...");
   for (DWORD lba = (DWORD) data_start_sec; lba < (DWORD) G.total_sec; ) {
     WORD c = chunk;
     if (lba + c > (DWORD) G.total_sec) c = (WORD) (G.total_sec - lba);
     for (WORD i = 0; i < c; ++i) ui_set_state((int) lba + i, ST_WRITING);
-    disk_write(dh, lba, c, dst + (lba - data_start_sec) * SECTOR_SIZE);
+    if (disk_write(dh, lba, c,
+                   dst + (lba - data_start_sec) * SECTOR_SIZE) != 0)
+      goto done;
     /*  Settle each sector into its final colour.  */
     for (WORD i = 0; i < c; ++i) {
       int cl = lba_to_cluster(lba + i);
@@ -347,7 +361,6 @@ static int defrag_worker(DiskHandle * dh, int * moved_out, int * zeroed_out) {
     lba += c;
   }
 
-  /*  Commit both FAT copies and the updated root directory.  */
   ui_status("Defrag: writing FAT...");
   for (int f = 0; f < G.num_fats; ++f)
     if (disk_write(dh, (DWORD) (G.reserved_sec + f * G.fat_size),
@@ -400,13 +413,8 @@ DWORD WINAPI defrag_thread_proc(LPVOID arg) {
   G.has_fat = 1;
   SendMessageA(G.hStatus, SB_SETTEXTA, 1, (LPARAM) G.fs_type);
 
-  /*  Lock with the level 2 -> 1 -> 0 ladder, same as Format.  */
-  int lock_rc = -1;
-  for (int lvl = 2; lvl >= 0; --lvl) {
-    lock_rc = disk_lock(&dh, lvl);
-    if (lock_rc == 0) break;
-  }
-  if (lock_rc < 0) {
+  /*  Full exclusive lock: level 0 first, then escalate.  */
+  if (disk_lock(&dh, 3) < 0) {
     ui_status("Defrag aborted - cannot lock drive.");
     disk_close(&dh);
     goto done;

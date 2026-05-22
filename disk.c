@@ -50,18 +50,35 @@ static int vwin32_ioctl_440d(DiskHandle * d, WORD cx, BYTE bh, BYTE dx) {
   return 0;
 }
 
-int disk_lock(DiskHandle * d, int level) {
+/*  Lock the logical volume for raw access (Int 21h 440Dh, CX=084Ah).
+    The documented Win9x protocol is to escalate: the level-0 lock is
+    granted only when no files are open on the volume and it flushes the
+    OS buffers; higher levels add exclusivity.  Releasing the lock makes
+    Windows discard its cached FAT/directory, so our raw writes stay
+    coherent.  A level-0 failure means the volume is in use - the caller
+    must abort rather than write without it.
+    max_level: 0 for read-only access, up to 3 for an exclusive write.  */
+int disk_lock(DiskHandle * d, int max_level) {
   if (d->locked) return 0;
-  /*  Lock logical volume: CX = 0x084A, BH = level, DX = permissions(1).  */
-  int r = vwin32_ioctl_440d(d, 0x084A, (BYTE) level, 1);
-  if (r == 0) d->locked = 1;
-  return r;
+  for (int lvl = 0; lvl <= max_level; ++lvl) {
+    int r = vwin32_ioctl_440d(d, 0x084A, (BYTE) lvl, 1);
+    if (r != 0) {
+      while (lvl-- > 0) vwin32_ioctl_440d(d, 0x086A, 0, 0);  /* unwind */
+      return r;
+    }
+  }
+  d->locked = 1;
+  d->lock_levels = max_level + 1;
+  return 0;
 }
 
 int disk_unlock(DiskHandle * d) {
   if (!d->locked) return 0;
-  int r = vwin32_ioctl_440d(d, 0x086A, 0, 0);
+  int r = 0;
+  for (int i = 0; i < d->lock_levels; ++i)
+    r = vwin32_ioctl_440d(d, 0x086A, 0, 0);
   d->locked = 0;
+  d->lock_levels = 0;
   return r;
 }
 
