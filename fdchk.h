@@ -144,7 +144,6 @@ typedef struct {
   HANDLE hVwin32;
   int    drive;        /*  0 = A:, 1 = B:  */
   int    locked;
-  int    lock_levels;  /*  number of nested volume locks held  */
 } DiskHandle;
 
 /*   FDC VxD interface.  */

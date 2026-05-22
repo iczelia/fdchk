@@ -413,8 +413,13 @@ DWORD WINAPI defrag_thread_proc(LPVOID arg) {
   G.has_fat = 1;
   SendMessageA(G.hStatus, SB_SETTEXTA, 1, (LPARAM) G.fs_type);
 
-  /*  Full exclusive lock: level 0 first, then escalate.  */
-  if (disk_lock(&dh, 3) < 0) {
+  /*  Try lock levels 2 -> 1 -> 0; keep the first the OS grants.  */
+  int lock_rc = -1;
+  for (int lvl = 2; lvl >= 0; --lvl) {
+    lock_rc = disk_lock(&dh, lvl);
+    if (lock_rc == 0) break;
+  }
+  if (lock_rc < 0) {
     ui_status("Defrag aborted - cannot lock drive.");
     disk_close(&dh);
     goto done;

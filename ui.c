@@ -1004,9 +1004,12 @@ void do_format_flow(HWND hWnd) {
     disk_close(&dh);
     return;
   }
-  /*  Full exclusive lock (level 0 first, then escalate).  A failure
-      means something else holds the volume open - refuse to format.  */
-  int lock_rc = disk_lock(&dh, 3);
+  /*  Try lock levels 2 -> 1 -> 0; keep the first the OS grants.  */
+  int lock_rc = -1;
+  for (int lvl = 2; lvl >= 0; --lvl) {
+    lock_rc = disk_lock(&dh, lvl);
+    if (lock_rc == 0) break;
+  }
   if (lock_rc < 0) {
     char err[200];
     wsprintfA(err,
