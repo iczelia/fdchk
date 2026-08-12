@@ -15,21 +15,14 @@
 
 #include "fdchk.h"
 
-/*  Surface test for a single sector.
-      orig - holds the original contents on entry/exit
-      pat  - scratch: the write-pattern source
-      chk  - scratch: the read-back buffer
-    Returns 0 on success, -DOS_ERR_* on error (orig restored best-effort).  */
-
+/*  Surface test for a single sector..  */
 static int test_one_sector(DiskHandle * d, DWORD lba,
                            BYTE * orig, BYTE * pat, BYTE * chk) {
   int r;
-
   ui_set_state((int) lba, ST_SCANNING);
   r = disk_read(d, lba, 1, orig);
   if (r != 0) return r;
   if (G.mode == MODE_STANDARD) return 0;
-
   /*  Each pattern step: fill pat, write, read back, compare.  */
   #define W_AND_V()                                       \
     do {                                                  \
@@ -41,15 +34,12 @@ static int test_one_sector(DiskHandle * d, DWORD lba,
         r = -DOS_ERR_DATA; goto restore;                  \
       }                                                   \
     } while (0)
-
   /*  (a) write the original back  */
   memcpy(pat, orig, SECTOR_SIZE);
   W_AND_V();
-
   /*  (b) write ~original  */
   for (int i = 0; i < SECTOR_SIZE; ++i) pat[i] = (BYTE) ~orig[i];
   W_AND_V();
-
   /*  (c) write a fresh random block  */
   for (int i = 0; i < SECTOR_SIZE; i += 4) {
     DWORD x = rng_next();
@@ -59,13 +49,10 @@ static int test_one_sector(DiskHandle * d, DWORD lba,
     pat[i + 3] = (BYTE) (x >> 24);
   }
   W_AND_V();
-
   /*  (d) write ~random  */
   for (int i = 0; i < SECTOR_SIZE; ++i) pat[i] = (BYTE) ~pat[i];
   W_AND_V();
-
   r = 0;
-
 restore:
   /*  Always try to put orig back, even after a failed step.  */
   memcpy(pat, orig, SECTOR_SIZE);
@@ -103,67 +90,90 @@ static void mark_existing_bad(DiskHandle * d) {
   LocalFree(fat);
 }
 
-/*  Diagnostic mode - probes the FDC, head and seek mechanism.  Uses the
-    VxD for true ST0/ST1/ST2 when present, else BIOS Int 13h (AH-decoded).
-    The state map is repurposed as 160 cells: 80 cylinders x 2 heads,
-    indexed cyl*2 + head.  */
-
-/*  Issue READ ID at (cyl, head); fill the ST triplet and C/H/R/N.  */
+/*  Diagnostic mode.  */
 static int diag_read_id(DiskHandle * dh, int drive, int cyl, int head,
                         BYTE * st0, BYTE * st1, BYTE * st2,
                         BYTE * c_out, BYTE * h_out,
                         BYTE * r_out, BYTE * n_out) {
-  if (G.hVxd) {
-    FdcIn in_buf;
-    FdcOut out;
-    memzero(&in_buf, sizeof in_buf);
-    in_buf.drive = (BYTE) drive;
-    in_buf.head  = (BYTE) head;
-    in_buf.motor = 1;
-    in_buf.cyl   = (BYTE) cyl;
-    vxd_call(IOCTL_FDC_SEEK, &in_buf, &out);
-    if (vxd_call(IOCTL_FDC_READID, &in_buf, &out) && out.result_n >= 7) {
-      *st0 = out.st0; *st1 = out.st1; *st2 = out.st2;
-      *c_out = out.c; *h_out = out.h;
-      *r_out = out.r; *n_out = out.n;
-      return ((out.st0 & 0xC0) == 0) ? 0 : 1;
-    }
-    /*  VxD call failed - fall through to BIOS.  */
+  FdcIn in_buf;  FdcOut out;
+  (void) dh;
+  memzero(&in_buf, sizeof in_buf);
+  in_buf.drive = (BYTE) drive;
+  in_buf.head  = (BYTE) head;
+  in_buf.cyl   = (BYTE) cyl;
+  vxd_call(IOCTL_FDC_SEEK, &in_buf, &out);
+  if (vxd_call(IOCTL_FDC_READID, &in_buf, &out) && out.result_n >= 7) {
+    *st0 = out.st0; *st1 = out.st1; *st2 = out.st2;
+    *c_out = out.c; *h_out = out.h;
+    *r_out = out.r; *n_out = out.n;
+    return ((out.st0 & 0xC0) == 0) ? 0 : 1;
   }
-  /*  BIOS Int 13h AH=02: read 1 sector; AH digests the result phase.  */
-  BYTE buf[SECTOR_SIZE], ah = 0;
-  int rc = bios_int13(dh, 0x02, 1, cyl, head, 1, buf, &ah);
-  bios_ah_to_st(ah, st0, st1, st2);
-  *c_out = (BYTE) cyl;  *h_out = (BYTE) head;
-  *r_out = 1;           *n_out = 2;
-  return rc ? 1 : 0;
+  *st0 = 0x80;   /*  invalid command: the controller never answered  */
+  *st1 = *st2 = 0;
+  *c_out = *h_out = *r_out = *n_out = 0;
+  return 1;
 }
 
 static DWORD diag_worker(DiskHandle * dh) {
-  char log_full[MAX_PATH];
-  log_path(log_full, "fdchk-diag.log");
-  HANDLE log = CreateFileA(log_full, GENERIC_WRITE, 0, NULL,
-      CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (!G.hVxd) {
+    ui_prompt("Diagnostic mode needs the raw-FDC driver, which did not "
+              "load.\n\n"
+              "fdchk.vxd is embedded in the executable and loads itself on "
+              "start; if it failed, this is not Windows 95/98/Me or the VxD "
+              "loader refused it.\n\n"
+              "The other test modes do not need it.",
+              APP_NAME, MB_OK | MB_ICONWARNING);
+    ui_status("Diagnostic mode unavailable: fdchk.vxd did not load.");
+    return 0;
+  }
 
-  /*  Counters at function scope so a goto-skip can't leave them unset.  */
-  int wrong_cyl = 0, no_am = 0, ok_reads = 0, stress_fail = 0;
+
+  HANDLE log = log_create("fdchk-diag.log");
+  int wrong_cyl = 0, no_am = 0, ok_reads = 0, stress_fail = 0, stress_n = 0;
   DWORD seek_total = 0, seek_avg10 = 0, rnd_total = 0, rnd_avg10 = 0;
   const DWORD rnd_n = 50;
+
+  /*  Physical layout of the drive under test.  */
+  BYTE dev_type = disk_probe_drive_type(dh);
+  const FloppyGeom * dg = geom_for_drive_type(dev_type);
+  int n_cyl  = dg ? dg->cyls  : MAX_CYLS;
+  int n_head = dg ? dg->heads : MAX_HEADS;
+  int n_cell = n_cyl * n_head;
+  int inner  = n_cyl - 1;
+  G.drive_type[G.drive & 1] = dev_type;
+  ui_drive_labels();
+  G.cyls  = n_cyl;
+  G.heads = n_head;
 
   SYSTEMTIME t;
   GetLocalTime(&t);
   LOG_FMT(log,
       "fdchk Drive Diagnostic Log\r\n"
-      "Drive: %c:   VxD: %s\r\n"
+      "Drive: %c:   Type: %s   (raw FDC via fdchk.vxd)\r\n"
+      "Layout: %d cylinders x %d head(s)\r\n"
       "Date:  %04d-%02d-%02d %02d:%02d:%02d\r\n\r\n",
-      'A' + G.drive,
-      G.hVxd ? "loaded (raw FDC, true ST0/ST1/ST2)"
-             : "NOT loaded (BIOS Int 13h, AH-decoded)",
+      'A' + G.drive, drive_type_str(dev_type), n_cyl, n_head,
       t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
 
-  /*  Repurpose the state map as 160 cells.  */
-  G.total_sec = 160;
-  for (int i = 0; i < 160; ++i) G.state[i] = ST_UNTESTED;
+  {
+    FdcOut ms;
+    int m = vxd_sense_media(G.drive, &ms);
+    LOG_FMT(log,
+        "Media sense:  %s\r\n"
+        "  DIR before=%02x after=%02x (bit 7 = disk change)\r\n"
+        "  READ ID  ST=%02x %02x %02x  C=%d H=%d R=%d N=%d  n=%d  status=%02x\r\n\r\n",
+        m == MEDIA_PRESENT    ? "disk present, sector IDs readable" :
+        m == MEDIA_NONE       ? "drive reports empty" :
+        m == MEDIA_UNREADABLE ? "disk present, no readable sector IDs"
+                              : "unavailable",
+        ms.dir_before, ms.dir_after,
+        ms.st0, ms.st1, ms.st2, ms.c, ms.h, ms.r, ms.n,
+        ms.result_n, ms.status);
+  }
+
+  /*  Repurpose the state map as one cell per (cylinder, head).  */
+  G.total_sec = n_cell;
+  for (int i = 0; i < n_cell; ++i) G.state[i] = ST_UNTESTED;
   SendMessageA(G.hMain, WM_APP_REPAINT, 0, 0);
 
   DWORD t_start = now_ms();
@@ -172,23 +182,18 @@ static DWORD diag_worker(DiskHandle * dh) {
   /*  Test 1: reset.  */
   ui_status("[1/5] Reset controller...");
   DWORD t0 = now_ms();
-  if (G.hVxd) {
+  {
     FdcOut o;
     vxd_call(IOCTL_FDC_RESET, NULL, &o);
     LOG_FMT(log, "Reset:        %lums  ST0=%02x  status=%02x\r\n",
             (DWORD) (now_ms() - t0), o.st0, o.status);
-  } else {
-    BYTE ah;
-    bios_int13(dh, 0x00, 0, 0, 0, 0, NULL, &ah);
-    LOG_FMT(log, "Reset:        %lums  BIOS AH=%02x  %s\r\n",
-            (DWORD) (now_ms() - t0), ah, bios_ah_str(ah));
   }
   if (G.abort_req) goto done;
 
   /*  Test 2: recalibrate.  */
   ui_status("[2/5] Recalibrate (seek to track 0)...");
   t0 = now_ms();
-  if (G.hVxd) {
+  {
     FdcIn in_buf;
     FdcOut o;
     memzero(&in_buf, sizeof in_buf);
@@ -197,11 +202,6 @@ static DWORD diag_worker(DiskHandle * dh) {
     LOG_FMT(log,
         "Recalibrate:  %lums  ST0=%02x  cur_cyl=%d  status=%02x\r\n",
         (DWORD) (now_ms() - t0), o.st0, o.cur_cyl, o.status);
-  } else {
-    BYTE ah;
-    bios_int13(dh, 0x11, 0, 0, 0, 0, NULL, &ah);
-    LOG_FMT(log, "Recalibrate:  %lums  BIOS AH=%02x  %s\r\n",
-            (DWORD) (now_ms() - t0), ah, bios_ah_str(ah));
   }
   if (G.abort_req) goto done;
 
@@ -211,9 +211,9 @@ static DWORD diag_worker(DiskHandle * dh) {
   log_write(log,
       "\r\nREAD ID sweep (track, head, ST0, ST1, ST2, C, H, R, N):\r\n");
   DWORD sweep_start = now_ms();
-  for (int cyl = 0; cyl < 80 && !G.abort_req; ++cyl) {
-    for (int head = 0; head < 2 && !G.abort_req; ++head) {
-      int idx = cyl * 2 + head;
+  for (int cyl = 0; cyl < n_cyl && !G.abort_req; ++cyl) {
+    for (int head = 0; head < n_head && !G.abort_req; ++head) {
+      int idx = cyl * n_head + head;
       G.current_sec = idx;
       G.state[idx] = ST_SCANNING;
       grid_invalidate_cell(idx);
@@ -253,36 +253,38 @@ static DWORD diag_worker(DiskHandle * dh) {
   if (G.abort_req) goto done;
 
   /*  Test 5: innermost-track stress.  */
-  ui_status("[4/5] Innermost-track READ ID stress (track 79)...");
-  log_write(log, "Innermost-track stress (50x READ ID at track 79):\r\n");
+  {
+    char m[80];
+    wsprintfA(m, "[4/5] Innermost-track READ ID stress (track %d)...", inner);
+    ui_status(m);
+    LOG_FMT(log, "Innermost-track stress (50x READ ID at track %d):\r\n",
+            inner);
+  }
   for (int i = 0; i < 50 && !G.abort_req; ++i) {
-    for (int head = 0; head < 2 && !G.abort_req; ++head) {
+    for (int head = 0; head < n_head && !G.abort_req; ++head) {
       BYTE st0 = 0, st1 = 0, st2 = 0, c = 0, h = 0, r = 0, n = 0;
-      int rc = diag_read_id(dh, G.drive, 79, head,
+      int rc = diag_read_id(dh, G.drive, inner, head,
                             &st0, &st1, &st2, &c, &h, &r, &n);
-      if (rc || (st0 & 0xC0) || c != 79) stress_fail++;
+      stress_n++;
+      if (rc || (st0 & 0xC0) || c != inner) stress_fail++;
     }
   }
-  LOG_FMT(log, "  100 reads, %d failures (%d%% reliability)\r\n\r\n",
-          stress_fail, (100 * (100 - stress_fail)) / 100);
+  LOG_FMT(log, "  %d reads, %d failures (%d%% reliability)\r\n\r\n",
+          stress_n, stress_fail,
+          stress_n ? (100 * (stress_n - stress_fail)) / stress_n : 0);
 
   /*  Test 6: random seek timing.  Batch-timed for the same reason.  */
   ui_status("[5/5] Random seek timing (50 jumps)...");
   log_write(log, "Random seek timing:\r\n");
   DWORD batch_start = now_ms();
   for (DWORD i = 0; i < rnd_n && !G.abort_req; ++i) {
-    int cyl = (int) (rng_next() % 80);
-    if (G.hVxd) {
-      FdcIn in_buf;
-      FdcOut o;
-      memzero(&in_buf, sizeof in_buf);
-      in_buf.drive = (BYTE) G.drive;
-      in_buf.cyl   = (BYTE) cyl;
-      vxd_call(IOCTL_FDC_SEEK, &in_buf, &o);
-    } else {
-      BYTE ah;
-      bios_int13(dh, 0x0C, 0, cyl, 0, 0, NULL, &ah);
-    }
+    int cyl = (int) (rng_next() % (DWORD) n_cyl);
+    FdcIn in_buf;
+    FdcOut o;
+    memzero(&in_buf, sizeof in_buf);
+    in_buf.drive = (BYTE) G.drive;
+    in_buf.cyl   = (BYTE) cyl;
+    vxd_call(IOCTL_FDC_SEEK, &in_buf, &o);
   }
   rnd_total = now_ms() - batch_start;
   rnd_avg10 = rnd_n ? (rnd_total * 10 / rnd_n) : 0;
@@ -308,27 +310,32 @@ done:
 
     const char * verdict;
     UINT vicon;
-    if (ok_reads >= 150 && wrong_cyl == 0 && no_am == 0 && stress_fail < 5) {
+    /*  Thresholds scale with the drive.  */
+    int ok_thresh     = n_cell - n_cell / 16;
+    int stress_ok     = stress_n / 20;
+    int stress_severe = stress_n / 5;
+    if (ok_reads >= ok_thresh && wrong_cyl == 0 && no_am == 0 &&
+        stress_fail <= stress_ok) {
       verdict = "Drive looks healthy.";
       vicon = MB_ICONINFORMATION;
     } else if (wrong_cyl > 0) {
       verdict = "Wrong-Cylinder failures detected - the head is reading "
-                "IDs from the wrong track.  The classic head-alignment "
-                "symptom; the drive may need re-alignment or replacement.";
+                "IDs from the wrong track.  The drive may need re-alignment "
+                "or replacement.";
       vicon = MB_ICONWARNING;
     } else if (no_am > 5) {
       verdict = "Many tracks return no address mark.  The disk may be "
                 "unformatted, or the drive is failing to read those "
                 "tracks at all.";
       vicon = MB_ICONWARNING;
-    } else if (stress_fail > 20) {
+    } else if (stress_fail > stress_severe) {
       verdict = "Innermost-track stress failed often.  The head is "
-                "degraded - innermost tracks fail first as the magnetic "
+                "degraded.  Innermost tracks fail first as the magnetic "
                 "field weakens.";
       vicon = MB_ICONWARNING;
     } else {
       verdict = "Some tracks failed but with no clear pattern.  Try a "
-                "known-good disk to rule out media-only damage.";
+                "known-good disk.";
       vicon = MB_ICONWARNING;
     }
 
@@ -337,15 +344,15 @@ done:
         "Drive Diagnostic Results (drive %c:)\r\n\r\n"
         "Phase 1 - Reset:        ran in elapsed %s\r\n"
         "Phase 2 - Recalibrate:  issued\r\n"
-        "Phase 3 - Track sweep:  %d tracks reachable on both heads\r\n"
+        "Phase 3 - Track sweep:  %d of %d cells read cleanly\r\n"
         "                        %d wrong-cylinder failures\r\n"
         "                        %d no-address-mark failures\r\n"
         "                        %lu.%lu ms avg per READ ID\r\n"
-        "Phase 4 - Inner stress: %d of 100 reads failed at track 79\r\n"
+        "Phase 4 - Inner stress: %d of %d reads failed at track %d\r\n"
         "Phase 5 - Random seeks: %lu.%lu ms avg per seek\r\n\r\n"
         "%s\r\n\r\nFull log: fdchk-diag.log",
-        'A' + G.drive, els, ok_reads, wrong_cyl, no_am,
-        seek_avg10 / 10, seek_avg10 % 10, stress_fail,
+        'A' + G.drive, els, ok_reads, n_cell, wrong_cyl, no_am,
+        seek_avg10 / 10, seek_avg10 % 10, stress_fail, stress_n, inner,
         rnd_avg10 / 10, rnd_avg10 % 10, verdict);
     MessageBoxA(G.hMain, summary, "Drive Diagnostic", MB_OK | vicon);
   }
@@ -357,16 +364,12 @@ done:
 DWORD WINAPI worker_proc(LPVOID arg) {
   (void) arg;
   DiskHandle dh;
-  int rc;
-
-  /*  Heap-allocate the per-sector buffers so the worker's stack frame
-      stays well under 4 KB.  */
+  int rc, resynced = 0;
   BYTE * orig = (BYTE *) LocalAlloc(LPTR, SECTOR_SIZE);
   BYTE * pat  = (BYTE *) LocalAlloc(LPTR, SECTOR_SIZE);
   BYTE * chk  = (BYTE *) LocalAlloc(LPTR, SECTOR_SIZE);
   BYTE * bpb  = (BYTE *) LocalAlloc(LPTR, SECTOR_SIZE);
   if (!orig || !pat || !chk || !bpb) goto cleanup;
-
   if (!disk_open(&dh, G.drive)) {
     ui_status("ERROR: Cannot open drive (no driver / not Win9x).");
     ui_prompt("Could not open the floppy drive.\n"
@@ -375,7 +378,6 @@ DWORD WINAPI worker_proc(LPVOID arg) {
               APP_NAME, MB_OK | MB_ICONERROR);
     goto cleanup;
   }
-
   rc = disk_lock(&dh, 1);
   if (rc < 0) {
     char msg[160];
@@ -387,21 +389,29 @@ DWORD WINAPI worker_proc(LPVOID arg) {
     ui_status("Lock failed.");
     goto close_disk;
   }
-
+  G.drive_type[G.drive & 1] = disk_probe_drive_type(&dh);
+  ui_drive_labels();
   /*  Probe before dispatch so every mode gets the same media detection.  */
 retry_probe: {
   int present = probe_disk_present(&dh);
-  if (present == 0) {
+  if (present == MEDIA_NONE) {
     if (ui_prompt("No disk in the drive.\n\n"
                   "Insert a floppy and click Retry, or Cancel to abort.",
                   APP_NAME, MB_RETRYCANCEL | MB_ICONWARNING) == IDRETRY)
       goto retry_probe;
     goto unlock;
   }
-  if (present < 0) {
+  if (present == MEDIA_UNREADABLE) {
+    if (!resynced && disk_resync_media(&dh)) {
+      resynced = 1;
+      goto retry_probe;
+    }
     if (ui_prompt("Disk is unreadable at every position probed.\n\n"
-                  "It is most likely physically damaged or fully\n"
-                  "demagnetised.  Continue scanning anyway?",
+                  "Either the tracks carry no valid sector IDs (unformatted,\n"
+                  "written at another density, or the address marks have\n"
+                  "decayed) or the disk is physically damaged.\n\n"
+                  "A Full format re-lays every track and often revives such\n"
+                  "a disk.  Continue scanning anyway?",
                   APP_NAME, MB_OKCANCEL | MB_ICONWARNING) != IDOK)
       goto unlock;
   }
@@ -409,18 +419,18 @@ retry_probe: {
 
   if (G.mode == MODE_DIAGNOSTIC) { diag_worker(&dh);  goto unlock; }
   if (G.mode == MODE_CHKFS)      { chkfs_worker(&dh); goto unlock; }
-
-  /*  Read the BPB.  Media is confirmed present; a failure here means the
-      boot sector alone is unreadable.  */
+  /*  Read the BPB.  */
   ui_status("Reading boot sector / BPB...");
   rc = disk_read(&dh, 0, 1, bpb);
+  if (rc != 0 && !resynced && disk_resync_media(&dh)) {
+    resynced = 1;
+    rc = disk_read(&dh, 0, 1, bpb);
+  }
   if (rc != 0 || !parse_bpb(bpb)) {
-    /*  Fall back to 1.44 MB geometry, filesystem unknown.  */
-    G.bytes_per_sec = SECTOR_SIZE;  G.sec_per_cluster = 1;
-    G.reserved_sec = 1;             G.num_fats = 2;
-    G.fat_size = 9;                 G.root_entries = 224;
-    G.total_sec = 2880;             G.data_start_sec = 33;
-    G.total_clusters = 2847;        G.media_byte = 0xF0;
+    /*  No usable BPB.  */
+    const FloppyGeom * g =
+        geom_for_drive_type(G.drive_type[G.drive & 1]);
+    geom_apply(g ? g : geom_for_size(2880));
     lstrcpyA(G.fs_type, "RAW");
     G.vol_label[0] = 0;
     G.has_fat = 0;
@@ -544,10 +554,8 @@ retry_probe: {
     ui_status(buf);
   }
 
-unlock:
-  disk_unlock(&dh);
-close_disk:
-  disk_close(&dh);
+unlock:     disk_unlock(&dh);
+close_disk: disk_close(&dh);
 cleanup:
   if (orig) LocalFree(orig);
   if (pat)  LocalFree(pat);
