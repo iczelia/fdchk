@@ -43,21 +43,41 @@ int memcmp(const void * a, const void * b, size_t n) {
 }
 
 int x_strlen(const char * s) {
-  const char * p = s;
-  while (*p) ++p;
-  return (int) (p - s);
+  int n = -1;
+  __asm__ volatile("repne scasb"
+                   : "+c"(n), "+D"(s)
+                   : "a"(0)
+                   : "cc", "memory");
+  return -n - 2;
 }
 char * x_strcpy(char * d, const char * s) {
   char * r = d;
-  while ((*d++ = *s++)) ;
+  __asm__ volatile("1:\tlodsb\n\t"
+                   "stosb\n\t"
+                   "testb %%al, %%al\n\t"
+                   "jnz 1b"
+                   : "+S"(s), "+D"(d)
+                   :
+                   : "eax", "cc", "memory");
   return r;
 }
-/*  lstrcpynA: copy at most n-1 chars, always NUL-terminate.  */
+
 char * x_strcpyn(char * d, const char * s, int n) {
   char * r = d;
   if (n > 0) {
-    while (--n && (*d = *s)) { ++d; ++s; }
-    *d = 0;
+    unsigned c = (unsigned) n - 1;
+    __asm__ volatile("jecxz 2f\n"
+                     "1:\tlodsb\n\t"
+                     "stosb\n\t"
+                     "testb %%al, %%al\n\t"
+                     "jz 3f\n\t"
+                     "decl %%ecx\n\t"
+                     "jnz 1b\n"
+                     "2:\tmovb $0, (%%edi)\n"
+                     "3:"
+                     : "+S"(s), "+D"(d), "+c"(c)
+                     :
+                     : "eax", "cc", "memory");
   }
   return r;
 }
@@ -495,8 +515,6 @@ void WinMainCRTStartup(void) {
 
   MSG msg;
   while (GetMessageA(&msg, NULL, 0, 0)) {
-    /*  IsDialogMessage must target the window owning the focused
-        control, else keystrokes meant for a popup leak into main.  */
     HWND active = GetActiveWindow();
     if (!active) active = hWnd;
     if (msg.message == WM_SYSKEYDOWN && msg.wParam >= 'A' && msg.wParam <= 'Z' &&
