@@ -14,10 +14,6 @@ MCOPY   := mcopy
 
 OBJS := fdchk.o disk.o vxd.o fat.o scan.o defrag.o ui.o
 
-# -march=i486 keeps the compiler off P6-only opcodes (CMOVcc etc.) that
-# fault on pre-Pentium-Pro hardware.  Per-sector and FAT scratch buffers
-# are heap-allocated, so every stack frame stays under 4 KB and we can
-# drop the libgcc stack-probe helper (-mno-stack-arg-probe).
 CFLAGS := -m32 -march=i486 -mtune=i486 -std=c11 -Os \
           -Wall -Wextra -Wno-unused-parameter -fno-ident \
           -fno-asynchronous-unwind-tables -fno-unwind-tables \
@@ -39,7 +35,6 @@ LIBS := -lkernel32 -luser32 -lgdi32 -lcomctl32
 
 all: fdchk.exe
 
-# fdchk.rc embeds fdchk.vxd as RCDATA, so the .res depends on the .vxd.
 fdchk.exe: $(OBJS) fdchk.res
 	$(CC) $(CFLAGS) -o $@ $(OBJS) fdchk.res $(LDFLAGS) $(LIBS)
 
@@ -51,11 +46,9 @@ $(OBJS): fdchk.h
 fdchk.res: fdchk.rc fdchk.ico fdchk.vxd
 	$(WINDRES) -O coff -i fdchk.rc -o $@
 
-# The NASM source assembles straight to a loadable LE-format VxD.
 fdchk.vxd: fdchk_vxd.asm
 	$(NASM) -f bin -o $@ $<
 
-# 1.44 MB FAT12 floppy image carrying the single-file EXE.
 floppy: fdchk.exe
 	dd if=/dev/zero of=fdchk.img bs=512 count=2880 status=none
 	$(MFORMAT) -i fdchk.img -f 1440 -v FDCHK ::

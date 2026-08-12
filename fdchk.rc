@@ -1,4 +1,4 @@
-/*  Copyright (C) 2026 Kamila Szewczyk
+/*  fdchk -- Copyright (C) 2026 Kamila Szewczyk
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -13,16 +13,12 @@
     You should have received a copy of the GNU General Public License
     along with this program. If not, see <http://www.gnu.org/licenses/>.  */
 
-/*  fdchk - resources.  */
-
 #include <windows.h>
 
 /*  Application icon (resource id 1).  */
 1 ICON "fdchk.ico"
 
-/*  The FDC VxD, embedded as a raw blob.  At startup fdchk.exe drops it to
-    %TEMP%\fdchk.vxd and attaches it via CreateFile, so the program ships
-    as a single file.  */
+/*  The FDC VxD, embedded as a raw blob.  */
 FDCHKVXD RCDATA "fdchk.vxd"
 
 /*  Version stamp.  */
@@ -38,11 +34,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "iczelia\0"
       VALUE "FileDescription",  "Floppy Disk Checker\0"
-      VALUE "FileVersion",      "1.0\0"
+      VALUE "FileVersion",      "1.2\0"
       VALUE "InternalName",     "fdchk\0"
       VALUE "OriginalFilename", "fdchk.exe\0"
       VALUE "ProductName",      "Floppy Disk Checker\0"
-      VALUE "ProductVersion",   "1.0\0"
+      VALUE "ProductVersion",   "1.2\0"
     END
   END
   BLOCK "VarFileInfo" BEGIN VALUE "Translation", 0x0409, 1252 END
