@@ -1,4 +1,4 @@
-/*  Copyright (C) 2026 Kamila Szewczyk
+/*  fdchk -- Copyright (C) 2026 Kamila Szewczyk
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -13,18 +13,10 @@
     You should have received a copy of the GNU General Public License
     along with this program. If not, see <http://www.gnu.org/licenses/>.  */
 
-/*  Entry point, main window procedure, GDI objects, shared helpers.
-    Built -nostdlib; links only kernel32/user32/gdi32/comctl32.  */
-
 #include "fdchk.h"
 #include <stdarg.h>
 
 App G;
-
-/*  GCC still emits memset/memcpy/memcmp from struct copies and loop
-    idioms; -nostdlib means we must define them.  REP string ops are the
-    fast path on the i486 target.  The x_ string and printf helpers
-    likewise replace the kernel32/user32 calls so those stay un-imported.  */
 
 void * memset(void * d, int c, size_t n) {
   void * r = d;
@@ -69,8 +61,8 @@ char * x_strcpyn(char * d, const char * s, int n) {
   return r;
 }
 
-/*  Minimal printf for the wsprintfA call sites: '-' and '0' flags, a
-    decimal width, an ignored length modifier, and %c %d %u %x %X %s %%.  */
+/*  Minimal printf: '-' and '0' flags, a decimal width, an ignored length
+    modifier, and %c %d %u %x %X %s %%.  */
 int x_sprintf(char * out, const char * fmt, ...) {
   char * o = out;
   va_list ap;
@@ -144,7 +136,7 @@ int x_sprintf(char * out, const char * fmt, ...) {
 
 DWORD now_ms(void) { return GetTickCount(); }
 
-/*  <exe-dir>\logs\, created once at startup; all log files land here.  */
+/*  <exe-dir>\logs\, created once at startup.  */
 void init_log_dir(void) {
   char exe[MAX_PATH];
   GetModuleFileNameA(NULL, exe, MAX_PATH);
@@ -164,6 +156,14 @@ void fmt_hms(DWORD ms, char * out) {
   DWORD s = ms / 1000;
   wsprintfA(out, "%02lu:%02lu:%02lu", (unsigned long) (s / 3600),
             (unsigned long) ((s / 60) % 60), (unsigned long) (s % 60));
+}
+
+HANDLE log_create(const char * name) {
+  char full[MAX_PATH];
+  log_path(full, name);
+  return CreateFileA(full, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                     CREATE_ALWAYS,
+                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
 }
 
 void log_write(HANDLE h, const char * s) {
@@ -299,8 +299,39 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       }
       return 0;
 
+    /*  Alt+mnemonics.  */
+    case WM_SYSCHAR: {
+      HWND t = NULL;
+      switch (wp | 0x20) {                   /*  fold to lower case  */
+        case 's': t = G.hStandard;   break;
+        case 't': t = G.hThorough;   break;
+        case 'd': t = G.hDiagnostic; break;
+        case 'f': t = G.hChkfs;      break;
+        case 'm': t = G.hAutoFix;    break;
+        case 'b': t = G.hBatch;      break;
+        case 'a': t = G.hStart;      break;
+        case 'p': t = G.hStop;       break;
+        case 'r': t = G.hRecover;    break;
+        case 'o': t = G.hFormat;     break;
+        case 'g': t = G.hDefrag;     break;
+        case 'l': t = G.hLogs;       break;
+        case 'u': t = G.hAbout;      break;
+        case 'c': t = G.hClose;      break;
+        default: break;
+      }
+      if (t && IsWindowVisible(t) && IsWindowEnabled(t)) {
+        SetFocus(t);
+        SendMessageA(t, BM_CLICK, 0, 0);
+        return 1;                            /*  handled - see the loop  */
+      }
+      break;
+    }
+
     case WM_COMMAND:
       switch (LOWORD(wp)) {
+        case IDOK:
+          if (IsWindowEnabled(G.hStart)) start_scan(h);
+          return 0;
         case ID_START:   start_scan(h);       return 0;
         case ID_STOP:    stop_scan(h);        return 0;
         case ID_RECOVER: do_recover_flow(h);  return 0;
@@ -358,8 +389,7 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       return 0;
 
     case WM_QUERYENDSESSION:
-      /*  Refuse shutdown while writing; signal abort to buy time.  If the
-          user forces it we get WM_ENDSESSION next and accept it.  */
+      /*  Refuse shutdown while writing; signal abort to buy time.  */
       if (G.running) {
         InterlockedExchange(&G.abort_req, 1);
         return FALSE;
@@ -396,7 +426,6 @@ static ATOM register_classes(HINSTANCE hi) {
   wc.hbrBackground = (HBRUSH) (COLOR_BTNFACE + 1);
   wc.lpszClassName = APP_CLASS;
   if (!RegisterClassA(&wc)) return 0;
-
   memzero(&wc, sizeof wc);
   wc.lpfnWndProc   = grid_proc;
   wc.hInstance     = hi;
@@ -418,15 +447,20 @@ void WinMainCRTStartup(void) {
 
   init_log_dir();
 
-  /*  Probe which floppy letters exist so we can hide the absent radio.
-      GetDriveType returns DRIVE_REMOVABLE for a present slot even when
-      no disk is inserted.  */
+  /*  Probe which floppy letters exist so we can hide the absent radio.  */
   G.has_a = (GetDriveTypeA("A:\\") == DRIVE_REMOVABLE);
   G.has_b = (GetDriveTypeA("B:\\") == DRIVE_REMOVABLE);
 
-  /*  Attach the FDC VxD - silent if absent; diagnostic mode then falls
-      back to BIOS Int 13h.  */
+  /*  Attach the FDC VxD.  */
   vxd_open();
+  G.drive_type[0] = G.drive_type[1] = DEV_UNKNOWN;
+  for (int i = 0; i < 2; ++i) {
+    DiskHandle d;
+    if (!(i ? G.has_b : G.has_a)) continue;
+    if (!disk_open(&d, i)) continue;
+    G.drive_type[i] = disk_probe_drive_type(&d);
+    disk_close(&d);
+  }
 
   INITCOMMONCONTROLSEX icc;
   icc.dwSize = sizeof icc;
@@ -450,17 +484,10 @@ void WinMainCRTStartup(void) {
 
   lstrcpyA(G.status, "Ready.  Insert a floppy disk and click Start.");
 
-  /*  Preload 1.44 MB geometry; grid_calc runs on the WM_SIZE that
-      ShowWindow triggers.  */
-  G.total_sec       = MAX_SECTORS;
-  G.bytes_per_sec   = SECTOR_SIZE;
-  G.sec_per_cluster = 1;
-  G.reserved_sec    = 1;
-  G.num_fats        = 2;
-  G.fat_size        = 9;
-  G.root_entries    = 224;
-  G.data_start_sec  = 33;
-  G.total_clusters  = 2847;
+  {
+    const FloppyGeom * g = geom_for_drive_type(G.drive_type[0]);
+    geom_apply(g ? g : geom_for_size(2880));
+  }
 
   ShowWindow(hWnd, SW_SHOW);
   UpdateWindow(hWnd);
@@ -471,6 +498,9 @@ void WinMainCRTStartup(void) {
         control, else keystrokes meant for a popup leak into main.  */
     HWND active = GetActiveWindow();
     if (!active) active = hWnd;
+    if (msg.message == WM_SYSKEYDOWN && msg.wParam >= 'A' && msg.wParam <= 'Z' &&
+        SendMessageA(active, WM_SYSCHAR, msg.wParam, msg.lParam))
+      continue;
     if (!IsDialogMessageA(active, &msg)) {
       TranslateMessage(&msg);
       DispatchMessageA(&msg);
