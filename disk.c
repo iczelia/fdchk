@@ -410,7 +410,7 @@ static int fmt_is_refusal(int rc) {
     can mark those clusters afterwards.  */
 static int fmt_low_level(DiskHandle * d, const FloppyGeom * g,
                          BYTE * bad_track, HANDLE log, int * failed_out) {
-  int failed = 0, last_err = 0;
+  int failed = 0, last_err = 0, rc = 0, held = 0;
   int n_track = g->cyls * g->heads;
   int by_fdc = (G.fmt_method == FMT_BY_FDC && G.hVxd != NULL);
   BYTE dt = G.drive_type[d->drive & 1];
@@ -419,9 +419,12 @@ static int fmt_low_level(DiskHandle * d, const FloppyGeom * g,
           by_fdc ? "raw FDC (fdchk.vxd, command 4Dh, non-DMA)"
                  : "block driver (Int 21h 440Dh CX=0842h)");
   *failed_out = 0;
+  /*  Hold the controller across the whole pass.  */
+  if (by_fdc) held = vxd_begin(d->drive);
+  if (by_fdc && !held) by_fdc = 0;
   for (int cyl = 0; cyl < g->cyls; ++cyl) {
     for (int head = 0; head < g->heads; ++head) {
-      if (G.abort_req) return -DOS_ERR_BAD_CMD;
+      if (G.abort_req) { rc = -DOS_ERR_BAD_CMD;  goto out; }
       int idx = cyl * g->heads + head;
       DWORD first = (DWORD) (idx * g->spt);
       wsprintfA(msg, "Formatting track %d, head %d of %d...",
@@ -446,7 +449,7 @@ static int fmt_low_level(DiskHandle * d, const FloppyGeom * g,
         if (!by_fdc)
           LOG_FMT(log, "  refused by the driver (%s) - giving up\r\n",
                   dos_ioctl_err_str(frc));
-        return frc;
+        rc = frc;  goto out;
       }
       int vrc = 0;
       if (frc == 0) {
@@ -482,10 +485,12 @@ static int fmt_low_level(DiskHandle * d, const FloppyGeom * g,
   if (failed == n_track) {
     LOG_FMT(log, "  every track failed (code %02x) - treating as a refusal\r\n",
             (BYTE) -last_err);
-    return last_err ? last_err : -0x1F;
+    rc = last_err ? last_err : -0x1F;  goto out;
   }
   *failed_out = failed;
-  return 0;
+out:
+  if (held) vxd_end();
+  return rc;
 }
 int format_disk(DiskHandle * d, const FloppyGeom * g,
                 const char * label, int style) {

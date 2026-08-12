@@ -242,16 +242,39 @@ enum {
   MEDIA_UNREADABLE = -1    /*  something is in there, nothing reads  */
 };
 
-/*   FDC VxD interface.  */
+/*   Asynchronous FDC VxD interface.  */
 
 #define IOCTL_FDC_RESET    0x0080
 #define IOCTL_FDC_RECAL    0x0082
 #define IOCTL_FDC_SEEK     0x0083
 #define IOCTL_FDC_READID   0x0084
-#define IOCTL_FDC_SENSEMED 0x0086
+#define IOCTL_FDC_POLL     0x0085   /*  command finished yet?  */
+#define IOCTL_FDC_DIR      0x0086   /*  sample the disk-change line  */
 #define IOCTL_FDC_FORMAT   0x0087
 #define IOCTL_FDC_CMOS     0x0088   /*  read the CMOS drive-type byte  */
+#define IOCTL_FDC_RESULT   0x0089   /*  collect the result phase  */
+#define IOCTL_FDC_MOTOR    0x008A
+#define IOCTL_FDC_SPECIFY  0x008B
+#define IOCTL_FDC_END      0x008C   /*  hand the controller back  */
 #define IOCTL_FDC_IDENT    0x008E   /*  driver liveness check  */
+
+/*  FdcOut.status values that are not an error.  */
+#define FDC_ST_OK    0x00
+#define FDC_ST_BUSY  0x01           /*  ask again in a moment  */
+
+/*  Interface version the driver reports to IOCTL_FDC_IDENT.  */
+#define FDC_VXD_VERSION 0x02
+
+/*  FdcIn.flags.  */
+#define FDC_F_MOTOR  0x01           /*  MOTOR: spin the drive up  */
+#define FDC_F_GATE   0x02           /*  MOTOR: leave the IRQ/DMA gate open  */
+#define FDC_F_SENSE  0x01           /*  POLL:  SENSE INTERRUPT when idle  */
+
+/*  How long the spindle needs to reach speed, and how long we are willing
+    to wait for a seek and for a sector header to come round.  */
+#define FDC_SPINUP_MS  500
+#define FDC_SEEK_MS    1000
+#define FDC_RESULT_MS  1000
 
 #pragma pack(push, 1)
 typedef struct {
@@ -262,6 +285,7 @@ typedef struct {
   BYTE filler;      /*  format: data-field fill byte  */
   BYTE rate;        /*  CCR data rate  */
   BYTE spec1, spec2;/*  SPECIFY timings  */
+  BYTE flags;       /*  FDC_F_* above  */
 } FdcIn;
 
 typedef struct {
@@ -272,6 +296,9 @@ typedef struct {
                                     nibble, B: in the low one  */
   BYTE pad;                     /*  round the reply out to 16 bytes  */
 } FdcOut;
+
+_Static_assert(sizeof(FdcIn)  == 11, "FdcIn  != FdcIn_total_size  in the VxD");
+_Static_assert(sizeof(FdcOut) == 16, "FdcOut != FdcOut_total_size in the VxD");
 
 #define FDC_DIR_DSKCHG 0x80
 
@@ -420,6 +447,12 @@ DWORD WINAPI format_thread_proc(LPVOID arg);
 int   vxd_open(void);
 void  vxd_close(void);
 int   vxd_call(DWORD ioctl, const FdcIn * in_buf, FdcOut * out_buf);
+int   vxd_begin(int drive);
+void  vxd_end(void);
+int   vxd_reset(FdcOut * out);
+int   vxd_recalibrate(int drive, FdcOut * out);
+int   vxd_seek(int drive, int cyl, int head, FdcOut * out);
+int   vxd_read_id(int drive, int head, FdcOut * out);
 BYTE  vxd_drive_type(int drive);
 int   vxd_sense_media(int drive, FdcOut * out);
 int   vxd_format_track(int drive, const FloppyGeom * g, int cyl, int head,

@@ -96,18 +96,14 @@ static int diag_read_id(DiskHandle * dh, int drive, int cyl, int head,
                         BYTE * st0, BYTE * st1, BYTE * st2,
                         BYTE * c_out, BYTE * h_out,
                         BYTE * r_out, BYTE * n_out) {
-  FdcIn in_buf;  FdcOut out;
+  FdcOut out;
   (void) dh;
-  memzero(&in_buf, sizeof in_buf);
-  in_buf.drive = (BYTE) drive;
-  in_buf.head  = (BYTE) head;
-  in_buf.cyl   = (BYTE) cyl;
-  vxd_call(IOCTL_FDC_SEEK, &in_buf, &out);
-  if (vxd_call(IOCTL_FDC_READID, &in_buf, &out) && out.result_n >= 7) {
-    *st0 = out.st0; *st1 = out.st1; *st2 = out.st2;
-    *c_out = out.c; *h_out = out.h;
-    *r_out = out.r; *n_out = out.n;
-    return ((out.st0 & 0xC0) == 0) ? 0 : 1;
+  vxd_seek(drive, cyl, head, &out);
+  if (vxd_read_id(drive, head, &out) == 0 && out.result_n >= 7) {
+    *st0 = out.st0;  *st1 = out.st1;  *st2 = out.st2;
+    *c_out = out.c;  *h_out = out.h;
+    *r_out = out.r;  *n_out = out.n;
+    return (out.st0 & 0xC0) == 0 ? 0 : 1;
   }
   *st0 = 0x80;   /*  invalid command: the controller never answered  */
   *st1 = *st2 = 0;
@@ -156,6 +152,13 @@ static DWORD diag_worker(DiskHandle * dh) {
       'A' + G.drive, drive_type_str(dev_type), n_cyl, n_head,
       t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
 
+  /*  Hold the controller across the sweep so the motor spins up once
+      instead of per track.  */
+  int held = vxd_begin(G.drive);
+  if (!held)
+    log_write(log, "note: could not hold the controller across the sweep, "
+                   "running without it\r\n\r\n");
+
   {
     FdcOut ms;
     int m = vxd_sense_media(G.drive, &ms);
@@ -185,7 +188,7 @@ static DWORD diag_worker(DiskHandle * dh) {
   DWORD t0 = now_ms();
   {
     FdcOut o;
-    vxd_call(IOCTL_FDC_RESET, NULL, &o);
+    vxd_reset(&o);
     LOG_FMT(log, "Reset:        %lums  ST0=%02x  status=%02x\r\n",
             (DWORD) (now_ms() - t0), o.st0, o.status);
   }
@@ -195,11 +198,8 @@ static DWORD diag_worker(DiskHandle * dh) {
   ui_status("[2/5] Recalibrate (seek to track 0)...");
   t0 = now_ms();
   {
-    FdcIn in_buf;
     FdcOut o;
-    memzero(&in_buf, sizeof in_buf);
-    in_buf.drive = (BYTE) G.drive;
-    vxd_call(IOCTL_FDC_RECAL, &in_buf, &o);
+    vxd_recalibrate(G.drive, &o);
     LOG_FMT(log,
         "Recalibrate:  %lums  ST0=%02x  cur_cyl=%d  status=%02x\r\n",
         (DWORD) (now_ms() - t0), o.st0, o.cur_cyl, o.status);
@@ -280,12 +280,8 @@ static DWORD diag_worker(DiskHandle * dh) {
   DWORD batch_start = now_ms();
   for (DWORD i = 0; i < rnd_n && !G.abort_req; ++i) {
     int cyl = (int) (rng_next() % (DWORD) n_cyl);
-    FdcIn in_buf;
     FdcOut o;
-    memzero(&in_buf, sizeof in_buf);
-    in_buf.drive = (BYTE) G.drive;
-    in_buf.cyl   = (BYTE) cyl;
-    vxd_call(IOCTL_FDC_SEEK, &in_buf, &o);
+    vxd_seek(G.drive, cyl, 0, &o);
   }
   rnd_total = now_ms() - batch_start;
   rnd_avg10 = rnd_n ? (rnd_total * 10 / rnd_n) : 0;
@@ -293,6 +289,7 @@ static DWORD diag_worker(DiskHandle * dh) {
           rnd_n, rnd_total, rnd_avg10 / 10, rnd_avg10 % 10);
 
 done:
+  if (held) vxd_end();                /*  motor off, gate back to Windows  */
   if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
 
   /*  Status line + a verdict popup that explains the numbers.  */
