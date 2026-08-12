@@ -14,9 +14,8 @@ Licensed under the GNU GPL v3, see `LICENSE`. Report bugs to
 2. Thorough - destructive per-sector surface test: read the original,
    then write-and-verify the original, its inverse, a PRNG block and that
    block's inverse, and finally restore the original.
-3. Diagnostic - probes the drive.  Uses BIOS `INT 13h` via VWIN32; with
-   `fdchk.vxd` loaded it switches to raw FDC commands and surfaces the
-   full `ST0/ST1/ST2/C/H/R/N` result phase.
+3. Diagnostic - probes the drive with raw FDC commands through
+   `fdchk.vxd`, surfacing the full `ST0/ST1/ST2/C/H/R/N` result phase.
 4. Check filesystem - walks FAT12 read-only for cross-linked clusters,
    lost chains, size mismatches, chain cycles and bad FAT entries.
 
@@ -26,7 +25,11 @@ Licensed under the GNU GPL v3, see `LICENSE`. Report bugs to
   every file with zero-filled holes where bad sectors fell, and writes
   `fdchk-recovery.log`.  With auto-fix on, new bad clusters are marked
   `0xFF7` in both FATs.
-- Format - quick or full FAT12 format of a 1.44 MB disk.
+- Format - FAT12 format at any capacity the drive supports.  *Quick*
+  rewrites the boot sector, both FATs and the root directory.  *Full* first
+  re-lays every track through the driver's track formatter (Int 21h 440Dh
+  CX=0842h, then CX=0862h to verify), which rewrites the sector ID address
+  marks, data address marks and CRCs.
 - Defrag - repacks files and subdirectories into contiguous low
   clusters (depth-first, alphabetical at each level) and zeroes every
   free cluster.
@@ -35,7 +38,8 @@ Licensed under the GNU GPL v3, see `LICENSE`. Report bugs to
 
 ## Diagnostic colours
 
-In Diagnostic mode the grid becomes a `cyl x head` map (160 cells):
+In Diagnostic mode the grid becomes a `cyl x head` map, sized from the
+drive (160 cells for an 80-cylinder drive, 80 for a 40-cylinder one):
 
 | Colour | Meaning |
 |---|---|

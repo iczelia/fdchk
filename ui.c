@@ -1,4 +1,4 @@
-/*  Copyright (C) 2026 Kamila Szewczyk
+/*  fdchk -- Copyright (C) 2026 Kamila Szewczyk
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,9 +34,7 @@ static void draw_3d_rect(HDC hdc, const RECT * r, BOOL sunken) {
 /*  8x8 dithered yellow/orange checker, rotated by phase, for the
     animated scanning brush.  */
 static HBITMAP make_hatch_bitmap(int phase) {
-  BITMAPINFO bi;
-  BYTE bits[8 * 8 * 4];
-  memzero(&bi, sizeof bi);
+  BITMAPINFO bi;  BYTE bits[8 * 8 * 4];  memzero(&bi, sizeof bi);
   bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
   bi.bmiHeader.biWidth       = 8;
   bi.bmiHeader.biHeight      = 8;
@@ -67,7 +65,6 @@ void update_scan_brush(void) {
 }
 
 /*  Cluster grid - owner-drawn child window.  */
-
 #define CELL_SIZE 9
 #define CELL_GAP  1      /*  1-px black gutter between cells  */
 #define GRID_PAD  4
@@ -80,8 +77,6 @@ void grid_calc(HWND h) {
   int w  = r.right  - r.left - GRID_PAD * 2;
   int hh = r.bottom - r.top  - GRID_PAD * 2;
   int total = G.total_sec > 0 ? G.total_sec : MAX_SECTORS;
-  /*  Called before the first WM_SIZE: stash a placeholder so we never
-      divide by zero; the real pass redoes the maths.  */
   if (w < CELL_SIZE * 2 || hh < CELL_SIZE * 2) {
     grid_geom.cols = 1;
     grid_geom.rows = total;
@@ -269,6 +264,24 @@ void ui_status(const char * s) {
     SendMessageA(G.hStatus, SB_SETTEXTA, 2, (LPARAM) G.status);
 }
 
+/*  Repaint the drive radio captions from G.drive_type.  */
+void ui_drive_labels(void) {
+  char t[64];
+  if (G.hDriveA) {
+    wsprintfA(t, "A:  (%s)", drive_type_str(G.drive_type[0]));
+    SetWindowTextA(G.hDriveA, t);
+  }
+  if (G.hDriveB) {
+    wsprintfA(t, "B:  (%s)", drive_type_str(G.drive_type[1]));
+    SetWindowTextA(G.hDriveB, t);
+  }
+}
+
+void ui_progress(DWORD done, DWORD total) {
+  if (G.hMain)
+    PostMessageA(G.hMain, WM_APP_PROGRESS, (WPARAM) done, (LPARAM) total);
+}
+
 int ui_prompt(const char * msg, const char * caption, UINT flags) {
   return MessageBoxA(G.hMain, msg, caption, flags);
 }
@@ -279,21 +292,23 @@ int ui_prompt(const char * msg, const char * caption, UINT flags) {
 void create_controls(HWND hWnd) {
   HINSTANCE hi = G.hInst;
 
+  /*  Captions are filled in by ui_drive_labels once the children exist.  */
   G.hGrpDrive = CreateWindowExA(0, "BUTTON", "Select a drive to check",
       WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 0, 0, 0, 0, hWnd, NULL, hi, NULL);
-  G.hDriveA = CreateWindowExA(0, "BUTTON", "&A:  (3.5\" Floppy)",
-      WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP,
+  G.hDriveA = CreateWindowExA(0, "BUTTON", "A:",
+      WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_DRIVE_A, hi, NULL);
-  G.hDriveB = CreateWindowExA(0, "BUTTON", "&B:  (3.5\" Floppy)",
+  G.hDriveB = CreateWindowExA(0, "BUTTON", "B:",
       WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_DRIVE_B, hi, NULL);
   SendMessageA(G.hDriveA, BM_SETCHECK, BST_CHECKED, 0);
+  ui_drive_labels();
 
   G.hGrpType = CreateWindowExA(0, "BUTTON", "Type of test",
       WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 0, 0, 0, 0, hWnd, NULL, hi, NULL);
   G.hStandard = CreateWindowExA(0, "BUTTON",
       "&Standard - read every sector and report errors (non-destructive)",
-      WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP,
+      WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_STANDARD, hi, NULL);
   G.hThorough = CreateWindowExA(0, "BUTTON",
       "&Thorough - full write-and-verify surface test (destructive)",
@@ -311,13 +326,13 @@ void create_controls(HWND hWnd) {
 
   G.hAutoFix = CreateWindowExA(0, "BUTTON",
       "Automatically &mark bad clusters in FAT (auto-fix)",
-      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_AUTOFIX, hi, NULL);
   SendMessageA(G.hAutoFix, BM_SETCHECK, BST_CHECKED, 0);
 
   G.hBatch = CreateWindowExA(0, "BUTTON",
       "&Batch mode (after each scan, prompt to insert the next disk)",
-      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_BATCH, hi, NULL);
 
   G.hGrid = CreateWindowExA(0, "FdchkGrid", NULL, WS_CHILD | WS_VISIBLE,
@@ -328,32 +343,32 @@ void create_controls(HWND hWnd) {
       (HMENU) (UINT_PTR) ID_PROGRESS, hi, NULL);
   SendMessageA(G.hProgress, PBM_SETRANGE, 0, MAKELPARAM(0, 1000));
 
-  G.hStart = CreateWindowExA(0, "BUTTON", "&Start",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_DEFPUSHBUTTON,
+  G.hStart = CreateWindowExA(0, "BUTTON", "St&art",
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | BS_DEFPUSHBUTTON,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_START, hi, NULL);
-  G.hStop = CreateWindowExA(0, "BUTTON", "S&top",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED,
+  G.hStop = CreateWindowExA(0, "BUTTON", "Sto&p",
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | WS_DISABLED,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_STOP, hi, NULL);
   G.hRecover = CreateWindowExA(0, "BUTTON", "&Recover...",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED,
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | WS_DISABLED,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_RECOVER, hi, NULL);
   G.hFormat = CreateWindowExA(0, "BUTTON", "F&ormat...",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_FORMAT, hi, NULL);
-  G.hDefrag = CreateWindowExA(0, "BUTTON", "&Defrag...",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+  G.hDefrag = CreateWindowExA(0, "BUTTON", "Defra&g...",
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_DEFRAG, hi, NULL);
   G.hLogs = CreateWindowExA(0, "BUTTON", "&Logs...",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_LOGS, hi, NULL);
-  G.hAbout = CreateWindowExA(0, "BUTTON", "About...",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+  G.hAbout = CreateWindowExA(0, "BUTTON", "Abo&ut...",
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_ABOUT, hi, NULL);
   G.hClose = CreateWindowExA(0, "BUTTON", "&Close",
-      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+      WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
       0, 0, 0, 0, hWnd, (HMENU) (UINT_PTR) ID_CLOSE, hi, NULL);
 
-  /*  Propagate the UI font to every child in one sweep.  */
+  /*  Propagate the UI font to every child.  */
   HWND children[] = {
     G.hGrpDrive, G.hDriveA, G.hDriveB,
     G.hGrpType, G.hStandard, G.hThorough, G.hDiagnostic, G.hChkfs,
@@ -364,8 +379,7 @@ void create_controls(HWND hWnd) {
   for (size_t i = 0; i < sizeof children / sizeof children[0]; ++i)
     SendMessageA(children[i], WM_SETFONT, (WPARAM) G.hFont, 0);
 
-  /*  Hide a drive radio with no physical drive behind it.  With fewer
-      than two floppies the choice is implicit, so drop the group.  */
+  /*  Hide a drive radio with no physical drive behind it.  */
   if (!G.has_a) ShowWindow(G.hDriveA, SW_HIDE);
   if (!G.has_b) ShowWindow(G.hDriveB, SW_HIDE);
   if (G.has_b && !G.has_a)
@@ -407,7 +421,7 @@ void layout_apply(HWND hWnd) {
   int W = cli.right - cli.left - PAD * 2;
   int y = cli.top + PAD;
 
-  /*  Drive group - skipped when hidden (0 or 1 floppies).  */
+  /*  Drive group - skipped when hidden.  */
   if (IsWindowVisible(G.hGrpDrive)) {
     int h = 18 + RADIO_H + 12;
     MoveWindow(G.hGrpDrive, x, y, W, h, TRUE);
@@ -471,8 +485,6 @@ void paint_legend(HDC hdc) {
   SetBkMode(hdc, TRANSPARENT);
   SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
 
-  /*  The legend tracks G.mode, which persists after a scan, so it always
-      matches what the grid is showing.  */
   HBRUSH brs[8];
   const char * labs[8];
   int n_items;
@@ -550,8 +562,6 @@ void start_scan(HWND hWnd) {
   G.autofix = SendMessageA(G.hAutoFix, BM_GETCHECK, 0, 0) == BST_CHECKED;
   G.batch   = SendMessageA(G.hBatch,   BM_GETCHECK, 0, 0) == BST_CHECKED;
 
-  /*  Reset per-scan counters here, not in the worker - a BPB-read
-      failure must not leave the previous scan's counts behind.  */
   G.running     = 1;
   G.abort_req   = 0;
   G.current_sec = -1;
@@ -588,6 +598,7 @@ void start_scan(HWND hWnd) {
   G.hThread = CreateThread(NULL, 0, worker_proc, NULL, 0, &G.tid);
   SetTimer(hWnd, 1, 100, NULL);   /*  UI refresh  */
   SetTimer(hWnd, 2, 150, NULL);   /*  hatch animation  */
+  if (!G.hThread) { G.running = 0; on_done(hWnd); }
 }
 
 void stop_scan(HWND hWnd) {
@@ -616,9 +627,52 @@ void on_done(HWND hWnd) {
   EnableWindow(G.hRecover,    G.bad_n > 0);
   InvalidateRect(hWnd, NULL, FALSE);
 
-  /*  Defrag reports its own outcome from the G.defrag_* fields.
-      defrag_rc: 0 = done, 1 = aborted with the disk untouched,
-      -1 = a write failed and the disk may be inconsistent.  */
+  if (G.mode == MODE_FORMAT) {
+    char msg[640];
+    const FloppyGeom * g = G.fmt_geom;
+    if (G.fmt_rc == 0) {
+      char els[16];
+      fmt_hms(G.t_start ? now_ms() - G.t_start : 0, els);
+      wsprintfA(msg,
+          "Drive %c: formatted.\r\n\r\n"
+          "Capacity:    %s\r\n"
+          "Type:        %s\r\n"
+          "Bad tracks:  %d%s\r\n"
+          "Elapsed:     %s%s%s",
+          'A' + G.drive, g ? g->name : "1.44 MB",
+          G.fmt_style == FMT_FULL
+              ? (G.fmt_lowlevel_ok ? "Full (tracks re-laid and verified)"
+                                   : "Full (sectors overwritten; the driver "
+                                     "refused a track format)")
+              : "Quick (filesystem only)",
+          G.fmt_bad_tracks,
+          G.fmt_bad_tracks ? " (their clusters marked bad in the FAT)" : "",
+          els,
+          G.fmt_msg[0] ? "\r\n\r\n" : "", G.fmt_msg);
+      if (G.fmt_sys_bad)
+        lstrcpynA(msg + lstrlenA(msg),
+            "\r\n\r\nWARNING: a bad track covers the boot sector, FAT or "
+            "root directory.\r\nThis disk should not be trusted with data.",
+            (int) sizeof msg - lstrlenA(msg));
+      MessageBoxA(hWnd, msg, "Format",
+                  MB_OK | ((G.fmt_bad_tracks || G.fmt_sys_bad || G.fmt_msg[0])
+                           ? MB_ICONWARNING : MB_ICONINFORMATION));
+      if (!G.fmt_sys_bad)
+        SendMessageA(G.hStatus, SB_SETTEXTA, 1, (LPARAM) "FAT12");
+    } else if (G.fmt_rc == 1) {
+      MessageBoxA(hWnd,
+          "Format stopped part-way through.\r\n\r\n"
+          "The disk is now in an inconsistent state - run the format "
+          "again before using it.",
+          "Format", MB_OK | MB_ICONWARNING);
+    } else {
+      wsprintfA(msg, "Format failed.\r\n\r\n%s",
+                G.fmt_msg[0] ? G.fmt_msg : "Unknown error.");
+      MessageBoxA(hWnd, msg, "Format", MB_OK | MB_ICONERROR);
+    }
+    return;
+  }
+
   if (G.mode == MODE_DEFRAG) {
     char msg[300];
     if (G.defrag_rc == 0) {
@@ -687,7 +741,6 @@ void on_done(HWND hWnd) {
 }
 
 /*  About box - the app icon plus a one-line copyright.  */
-
 static LRESULT CALLBACK about_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   switch (m) {
     case WM_CREATE: {
@@ -749,8 +802,7 @@ static LRESULT CALLBACK about_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 void do_about(HWND hWnd) {
   static int registered = 0;
   if (!registered) {
-    WNDCLASSA wc;
-    memzero(&wc, sizeof wc);
+    WNDCLASSA wc;  memzero(&wc, sizeof wc);
     wc.lpfnWndProc   = about_proc;
     wc.hInstance     = G.hInst;
     wc.hIcon         = LoadIconA(G.hInst, MAKEINTRESOURCEA(1));
@@ -776,8 +828,7 @@ void do_about(HWND hWnd) {
   UpdateWindow(about);
 }
 
-/*  In-app log viewer: a list of *.log files on the left, a read-only
-    edit control showing the selected file on the right.  */
+/*  In-app log viewer.  */
 
 #define ID_LV_LIST    2001
 #define ID_LV_EDIT    2002
@@ -908,6 +959,18 @@ static LRESULT CALLBACK lv_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       }
       return 0;
     }
+    case WM_SYSCHAR: {
+      int id = 0;
+      switch (wp | 0x20) {
+        case 'r': id = ID_LV_REFRESH; break;
+        case 'f': id = ID_LV_OPENDIR; break;
+        case 'c': id = ID_LV_CLOSE;   break;
+        default: break;
+      }
+      if (!id) break;
+      SendMessageA(h, WM_COMMAND, (WPARAM) id, 0);
+      return 1;
+    }
     case WM_CLOSE:
       DestroyWindow(h);
       return 0;
@@ -923,8 +986,7 @@ static LRESULT CALLBACK lv_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
 void do_logs(HWND parent) {
   static int registered = 0;
   if (!registered) {
-    WNDCLASSA wc;
-    memzero(&wc, sizeof wc);
+    WNDCLASSA wc;  memzero(&wc, sizeof wc);
     wc.lpfnWndProc   = lv_proc;
     wc.hInstance     = G.hInst;
     wc.hIcon         = LoadIconA(G.hInst, MAKEINTRESOURCEA(1));
@@ -953,11 +1015,6 @@ void do_logs(HWND parent) {
 }
 
 /*  Command flows: Format, Defrag, Recover.  */
-
-/*  fdchk cannot safely raw-write the volume it is itself running from:
-    Windows holds fdchk.exe open, so the volume can never be locked
-    exclusively, and the OS would write its cached FAT/directory back over
-    our new layout.  Returns 1 if drive (0=A, 1=B) is fdchk's own.  */
 static int running_from_drive(int drive) {
   char exe[MAX_PATH];
   GetModuleFileNameA(NULL, exe, MAX_PATH);
@@ -966,9 +1023,284 @@ static int running_from_drive(int drive) {
   return c == 'A' + drive;
 }
 
+/*  Format dialog: capacity, label and the quick/full choice.  */
+#define ID_FMT_CAP    2101
+#define ID_FMT_LABEL  2102
+#define ID_FMT_QUICK  2103
+#define ID_FMT_FULL   2104
+#define ID_FMT_OK     2105
+#define ID_FMT_CANCEL 2106
+#define ID_FMT_DRV    2107
+#define ID_FMT_FDC    2108
+
+#define FMT_DLG_W 428
+#define FMT_DLG_H 358
+
+static HWND g_fmt_dlg = NULL;
+static HWND g_fmt_cap = NULL, g_fmt_lbl = NULL;
+static HWND g_fmt_quick = NULL, g_fmt_full = NULL;
+static HWND g_fmt_drv = NULL, g_fmt_fdc = NULL;
+static int  g_fmt_drive = 0;
+static int  g_fmt_map[16];        /*  combo item -> geometry index  */
+
+static HWND fmt_static(HWND h, const char * s, int x, int y, int w, int hh) {
+  HWND t = CreateWindowExA(0, "STATIC", s, WS_CHILD | WS_VISIBLE,
+                           x, y, w, hh, h, NULL, G.hInst, NULL);
+  SendMessageA(t, WM_SETFONT, (WPARAM) G.hFont, 0);
+  return t;
+}
+
+static void fmt_start_job(void);
+
+/*  Identify the disk currently in the drive from its own BPB, without
+    disturbing the global geometry.  */
+static const FloppyGeom * fmt_detect_media(int drive) {
+  DiskHandle d;
+  BYTE bpb[SECTOR_SIZE];
+  const FloppyGeom * g = NULL;
+  if (!disk_open(&d, drive)) return NULL;
+  if (disk_read(&d, 0, 1, bpb) == 0 && bpb[0x0B] == 0x00 && bpb[0x0C] == 0x02) {
+    int total = bpb[0x13] | (bpb[0x14] << 8);
+    int spt   = bpb[0x18] | (bpb[0x19] << 8);
+    int heads = bpb[0x1A] | (bpb[0x1B] << 8);
+    g = geom_for_bpb(total, spt, heads);
+  }
+  disk_close(&d);
+  return g;
+}
+
+static LRESULT CALLBACK fmt_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+  switch (m) {
+    case WM_CREATE: {
+      BYTE dt = G.drive_type[g_fmt_drive & 1];
+
+      fmt_static(h, "Capacity:", 14, 18, 70, 16);
+      g_fmt_cap = CreateWindowExA(0, "COMBOBOX", NULL,
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+          CBS_DROPDOWNLIST, 90, 14, 322, 200, h,
+          (HMENU) (UINT_PTR) ID_FMT_CAP, G.hInst, NULL);
+      SendMessageA(g_fmt_cap, WM_SETFONT, (WPARAM) G.hFont, 0);
+
+      /*  Only the formats this drive can physically write.  */
+      const FloppyGeom * want = fmt_detect_media(g_fmt_drive);
+      if (!want) want = geom_for_drive_type(dt);
+      int n = 0, sel = -1, last = 0;
+      for (int i = 0; i < geom_count() && n < 16; ++i) {
+        const FloppyGeom * g = geom_at(i);
+        if (!geom_fits_drive(g, dt)) continue;
+        SendMessageA(g_fmt_cap, CB_ADDSTRING, 0, (LPARAM) g->name);
+        if (g == want) sel = n;
+        last = n;
+        g_fmt_map[n++] = i;
+      }
+      SendMessageA(g_fmt_cap, CB_SETCURSEL, sel >= 0 ? sel : last, 0);
+
+      fmt_static(h, "Label:", 14, 50, 70, 16);
+      g_fmt_lbl = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "FDCHK",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_UPPERCASE,
+          90, 46, 140, 22, h, (HMENU) (UINT_PTR) ID_FMT_LABEL,
+          G.hInst, NULL);
+      SendMessageA(g_fmt_lbl, WM_SETFONT, (WPARAM) G.hFont, 0);
+      SendMessageA(g_fmt_lbl, EM_LIMITTEXT, 11, 0);
+
+      HWND grp = CreateWindowExA(0, "BUTTON", "Format type",
+          WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+          14, 80, 398, 118, h, NULL, G.hInst, NULL);
+      SendMessageA(grp, WM_SETFONT, (WPARAM) G.hFont, 0);
+
+      g_fmt_quick = CreateWindowExA(0, "BUTTON", "&Quick",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+          BS_AUTORADIOBUTTON | WS_GROUP,
+          26, 100, 300, 18, h, (HMENU) (UINT_PTR) ID_FMT_QUICK,
+          G.hInst, NULL);
+      fmt_static(h, "Rewrites the boot sector, FATs and root directory.",
+                 44, 118, 360, 14);
+
+      g_fmt_full = CreateWindowExA(0, "BUTTON", "F&ull  (low-level)",
+          WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
+          26, 138, 300, 18, h, (HMENU) (UINT_PTR) ID_FMT_FULL,
+          G.hInst, NULL);
+      fmt_static(h, "Re-lays and verifies every track, then writes the",
+                 44, 156, 360, 14);
+      fmt_static(h, "filesystem.  Use this if the disk will not read or "
+                    "format.", 44, 170, 360, 14);
+      SendMessageA(g_fmt_quick, WM_SETFONT, (WPARAM) G.hFont, 0);
+      SendMessageA(g_fmt_full,  WM_SETFONT, (WPARAM) G.hFont, 0);
+      SendMessageA(g_fmt_full, BM_SETCHECK, BST_CHECKED, 0);
+
+      HWND grp2 = CreateWindowExA(0, "BUTTON", "Track formatter (Full only)",
+          WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+          14, 206, 398, 84, h, NULL, G.hInst, NULL);
+      SendMessageA(grp2, WM_SETFONT, (WPARAM) G.hFont, 0);
+
+      g_fmt_drv = CreateWindowExA(0, "BUTTON",
+          "&Block driver  (Int 21h 440Dh)",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+          BS_AUTORADIOBUTTON | WS_GROUP,
+          26, 226, 340, 18, h, (HMENU) (UINT_PTR) ID_FMT_DRV,
+          G.hInst, NULL);
+      g_fmt_fdc = CreateWindowExA(0, "BUTTON",
+          "&Raw FDC via fdchk.vxd  (command 4Dh, non-DMA)",
+          WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
+          26, 246, 340, 18, h, (HMENU) (UINT_PTR) ID_FMT_FDC,
+          G.hInst, NULL);
+      SendMessageA(g_fmt_drv, WM_SETFONT, (WPARAM) G.hFont, 0);
+      SendMessageA(g_fmt_fdc, WM_SETFONT, (WPARAM) G.hFont, 0);
+      SendMessageA(g_fmt_drv, BM_SETCHECK, BST_CHECKED, 0);
+      if (!G.hVxd) {
+        EnableWindow(g_fmt_fdc, FALSE);
+        fmt_static(h, "(fdchk.vxd did not load, so the raw FDC route is "
+                      "unavailable)", 44, 266, 360, 14);
+      } else {
+        fmt_static(h, "Use the raw route if the driver reports that it "
+                      "cannot format tracks.", 44, 266, 360, 14);
+      }
+
+      HWND ok = CreateWindowExA(0, "BUTTON", "&Format",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_GROUP |
+          BS_PUSHBUTTON | BS_DEFPUSHBUTTON,
+          FMT_DLG_W - 8 - 2 * 85 - 6, FMT_DLG_H - 8 - 24 - 4, 85, 24,
+          h, (HMENU) (UINT_PTR) ID_FMT_OK, G.hInst, NULL);
+      HWND cancel = CreateWindowExA(0, "BUTTON", "&Cancel",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+          FMT_DLG_W - 8 - 85, FMT_DLG_H - 8 - 24 - 4, 85, 24,
+          h, (HMENU) (UINT_PTR) ID_FMT_CANCEL, G.hInst, NULL);
+      SendMessageA(ok,     WM_SETFONT, (WPARAM) G.hFont, 0);
+      SendMessageA(cancel, WM_SETFONT, (WPARAM) G.hFont, 0);
+      SetFocus(ok);
+      return 0;
+    }
+    case WM_COMMAND: {
+      int id = LOWORD(wp);
+      if (id == IDOK) id = ID_FMT_OK;
+      if (id == ID_FMT_OK) {
+        int cur = (int) SendMessageA(g_fmt_cap, CB_GETCURSEL, 0, 0);
+        if (cur < 0) return 0;
+        const FloppyGeom * g = geom_at(g_fmt_map[cur]);
+        int full = SendMessageA(g_fmt_full, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+        char label[16];
+        label[0] = 0;
+        GetWindowTextA(g_fmt_lbl, label, sizeof label);
+
+        int by_fdc = SendMessageA(g_fmt_fdc, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+        char msg[480];
+        wsprintfA(msg,
+            "Format drive %c: as %s?\r\n\r\n"
+            "%s\r\n"
+            "ALL DATA on the disk will be lost.",
+            'A' + g_fmt_drive, g->name,
+            full ? (by_fdc
+                    ? "Every track will be re-laid by the FDC directly and "
+                      "checked;\r\nthis takes a few minutes."
+                    : "Every track will be re-laid and verified; this takes "
+                      "a few minutes.")
+                 : "Quick format - the filesystem only.");
+        if (MessageBoxA(h, msg, "Format Floppy",
+                MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
+          return 0;
+
+        G.fmt_geom   = g;
+        G.fmt_style  = full ? FMT_FULL : FMT_QUICK;
+        G.fmt_method = by_fdc ? FMT_BY_FDC : FMT_BY_DRIVER;
+        lstrcpynA(G.fmt_label, label, sizeof G.fmt_label);
+        DestroyWindow(h);
+        fmt_start_job();
+        return 0;
+      }
+      if (id == ID_FMT_CANCEL || id == IDCANCEL) {
+        DestroyWindow(h);
+        return 0;
+      }
+      return 0;
+    }
+    case WM_SYSCHAR: {
+      HWND t = NULL;
+      switch (wp | 0x20) {
+        case 'q': t = g_fmt_quick; break;
+        case 'u': t = g_fmt_full;  break;
+        case 'b': t = g_fmt_drv;   break;
+        case 'r': t = g_fmt_fdc;   break;
+        case 'f': t = GetDlgItem(h, ID_FMT_OK);     break;
+        case 'c': t = GetDlgItem(h, ID_FMT_CANCEL); break;
+        default: break;
+      }
+      if (t && IsWindowEnabled(t)) {
+        SetFocus(t);
+        SendMessageA(t, BM_CLICK, 0, 0);
+        return 1;                            /*  handled - see the loop  */
+      }
+      break;
+    }
+
+    case WM_CTLCOLORSTATIC:
+      SetBkMode((HDC) wp, TRANSPARENT);
+      SetTextColor((HDC) wp, GetSysColor(COLOR_BTNTEXT));
+      return (LRESULT) G.hbrFace;
+    case WM_CLOSE:
+      DestroyWindow(h);
+      return 0;
+    case WM_DESTROY:
+      g_fmt_dlg = NULL;
+      g_fmt_cap = g_fmt_lbl = g_fmt_quick = g_fmt_full = NULL;
+      g_fmt_drv = g_fmt_fdc = NULL;
+      if (G.hMain) {
+        EnableWindow(G.hMain, TRUE);
+        SetForegroundWindow(G.hMain);
+      }
+      return 0;
+  }
+  return DefWindowProcA(h, m, wp, lp);
+}
+
+/*  Hand the job to the worker thread; mirrors do_defrag_flow's setup.  */
+static void fmt_start_job(void) {
+  HWND hWnd = G.hMain;
+  G.drive       = g_fmt_drive;
+  G.mode        = MODE_FORMAT;
+  G.abort_req   = 0;
+  G.running     = 1;
+  G.closing     = 0;
+  G.current_sec = -1;
+  G.good_count  = 0;
+  G.bad_count   = 0;
+  G.scanned     = 0;
+  G.bad_n       = 0;
+  G.t_start     = now_ms();
+  G.has_fat     = 0;
+
+  EnableWindow(G.hStart,      FALSE);
+  EnableWindow(G.hStop,       TRUE);
+  EnableWindow(G.hRecover,    FALSE);
+  EnableWindow(G.hFormat,     FALSE);
+  EnableWindow(G.hDefrag,     FALSE);
+  EnableWindow(G.hStandard,   FALSE);
+  EnableWindow(G.hThorough,   FALSE);
+  EnableWindow(G.hDiagnostic, FALSE);
+  EnableWindow(G.hChkfs,      FALSE);
+
+  trail_clear();
+  SendMessageA(G.hStatus, SB_SETTEXTA, 0,
+               (LPARAM) (G.drive ? "Drive: B:" : "Drive: A:"));
+  SendMessageA(G.hStatus, SB_SETTEXTA, 2, (LPARAM) "Formatting...");
+
+  SetTimer(hWnd, 1, 100, NULL);
+  SetTimer(hWnd, 2, 150, NULL);
+  G.hThread = CreateThread(NULL, 0, format_thread_proc, NULL, 0, &G.tid);
+  if (!G.hThread) {
+    G.running = 0;
+    lstrcpyA(G.fmt_msg, "Could not start the format thread.");
+    G.fmt_rc = -1;
+    on_done(hWnd);
+  }
+}
+
 void do_format_flow(HWND hWnd) {
-  int drive = SendMessageA(G.hDriveB, BM_GETCHECK, 0, 0) == BST_CHECKED
-            ? 1 : 0;
+  if (G.running) return;
+  int drive = (G.has_b && !G.has_a) ? 1
+            : (SendMessageA(G.hDriveB, BM_GETCHECK, 0, 0) == BST_CHECKED
+               ? 1 : 0);
   if (running_from_drive(drive)) {
     char m[320];
     wsprintfA(m,
@@ -980,64 +1312,42 @@ void do_format_flow(HWND hWnd) {
     MessageBoxA(hWnd, m, "Format Floppy", MB_OK | MB_ICONERROR);
     return;
   }
-  char msg[400];
-  wsprintfA(msg,
-      "Format drive %c: as FAT12?\r\n\r\n"
-      "ALL DATA on the disk will be erased.\r\n\r\n"
-      "Click YES    for a Quick format (boot/FAT/root only).\r\n"
-      "Click NO     for a Full  format (also fill the data area).\r\n"
-      "Click CANCEL to abort.",
-      'A' + drive);
-  int ans = MessageBoxA(hWnd, msg, "Format Floppy",
-      MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON3);
-  if (ans == IDCANCEL) return;
-  int full = (ans == IDNO);
 
-  DiskHandle dh;
-  if (!disk_open(&dh, drive)) {
-    MessageBoxA(hWnd, "Cannot open drive.", APP_NAME, MB_OK | MB_ICONERROR);
-    return;
+  static int registered = 0;
+  if (!registered) {
+    WNDCLASSA wc;
+    memzero(&wc, sizeof wc);
+    wc.lpfnWndProc   = fmt_proc;
+    wc.hInstance     = G.hInst;
+    wc.hIcon         = LoadIconA(G.hInst, MAKEINTRESOURCEA(1));
+    wc.hCursor       = LoadCursorA(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH) (COLOR_BTNFACE + 1);
+    wc.lpszClassName = "FdchkFormat";
+    RegisterClassA(&wc);
+    registered = 1;
   }
-  if (probe_disk_present(&dh) == 0) {
-    MessageBoxA(hWnd, "No disk in the drive.", APP_NAME,
-                MB_OK | MB_ICONWARNING);
-    disk_close(&dh);
-    return;
-  }
-  /*  Try lock levels 2 -> 1 -> 0; keep the first the OS grants.  */
-  int lock_rc = -1;
-  for (int lvl = 2; lvl >= 0; --lvl) {
-    lock_rc = disk_lock(&dh, lvl);
-    if (lock_rc == 0) break;
-  }
-  if (lock_rc < 0) {
-    char err[200];
-    wsprintfA(err,
-        "Cannot lock drive %c: for format (%s).\r\n\r\n"
-        "Close anything that might be using the disk and try again.",
-        'A' + drive, dos_err_str(lock_rc));
-    MessageBoxA(hWnd, err, APP_NAME, MB_OK | MB_ICONERROR);
-    disk_close(&dh);
+  if (g_fmt_dlg && IsWindow(g_fmt_dlg)) {
+    SetForegroundWindow(g_fmt_dlg);
     return;
   }
 
-  int rc = format_disk(&dh, "FDCHK", full);
-  disk_unlock(&dh);
-  disk_close(&dh);
+  g_fmt_drive = drive;
+  char title[64];
+  wsprintfA(title, "Format drive %c:", 'A' + drive);
 
-  if (rc == 0) {
-    char done[200];
-    wsprintfA(done,
-        "Drive %c: formatted successfully.\r\n\r\n"
-        "Style: %s\r\nFilesystem: FAT12\r\nLabel: FDCHK",
-        'A' + drive, full ? "Full (data area zeroed)" : "Quick");
-    MessageBoxA(hWnd, done, "Format", MB_OK | MB_ICONINFORMATION);
-    SendMessageA(G.hStatus, SB_SETTEXTA, 1, (LPARAM) "FAT12");
-  } else {
-    char err[200];
-    wsprintfA(err, "Format failed: %s", dos_err_str(rc < 0 ? rc : -rc));
-    MessageBoxA(hWnd, err, "Format", MB_OK | MB_ICONERROR);
-  }
+  DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+  RECT pr, rc = { 0, 0, FMT_DLG_W, FMT_DLG_H };
+  GetWindowRect(hWnd, &pr);
+  AdjustWindowRect(&rc, style, FALSE);
+  g_fmt_dlg = CreateWindowExA(WS_EX_DLGMODALFRAME, "FdchkFormat", title,
+      style,
+      pr.left + ((pr.right - pr.left) - FMT_DLG_W) / 2,
+      pr.top  + ((pr.bottom - pr.top) - FMT_DLG_H) / 2,
+      rc.right - rc.left, rc.bottom - rc.top, hWnd, NULL, G.hInst, NULL);
+  if (!g_fmt_dlg) return;
+  EnableWindow(hWnd, FALSE);
+  ShowWindow(g_fmt_dlg, SW_SHOW);
+  UpdateWindow(g_fmt_dlg);
 }
 
 void do_defrag_flow(HWND hWnd) {
@@ -1069,8 +1379,6 @@ void do_defrag_flow(HWND hWnd) {
       MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
     return;
 
-  /*  All disk work runs on a worker thread so the UI stays responsive
-      and Stop keeps working; mirrors start_scan's setup.  */
   G.drive       = drive;
   G.mode        = MODE_DEFRAG;
   G.abort_req   = 0;
@@ -1106,6 +1414,7 @@ void do_defrag_flow(HWND hWnd) {
   SetTimer(hWnd, 1, 100, NULL);
   SetTimer(hWnd, 2, 150, NULL);
   G.hThread = CreateThread(NULL, 0, defrag_thread_proc, NULL, 0, &G.tid);
+  if (!G.hThread) { G.running = 0; G.defrag_rc = 1; on_done(hWnd); }
 }
 
 void do_recover_flow(HWND hWnd) {
