@@ -2,8 +2,9 @@
 
 A surface scanner, FAT12 consistency checker, file-recovery utility,
 defragmenter and raw-FDC head diagnostic for Windows 9x (95/98/Me).
-Licensed under the GNU GPL v3, see `LICENSE`. Report bugs to
-<k@iczelia.net>.
+Licensed under version 3 of the GNU GPL, and that version only
+(`GPL-3.0-only`) - the "any later version" option is not granted. See
+`LICENSE`. Report bugs to <k@iczelia.net>.
 
 ![screenshot](gui.png)
 

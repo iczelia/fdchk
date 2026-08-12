@@ -1,5 +1,6 @@
 # fdchk - floppy disk checker for Windows 9x.
-# Copyright (C) 2026 Kamila Szewczyk.  GNU GPL v3, see LICENSE.
+# Copyright (C) 2026 Kamila Szewczyk.  GNU GPL v3 only, see LICENSE.
+# SPDX-License-Identifier: GPL-3.0-only
 #
 #   make          fdchk.exe (release) + fdchk.vxd
 #   make floppy   1.44 MB FAT12 image holding fdchk.exe
