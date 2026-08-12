@@ -1,4 +1,4 @@
-/*  Copyright (C) 2026 Kamila Szewczyk
+/*  fdchk -- Copyright (C) 2026 Kamila Szewczyk
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,7 +15,6 @@
 
 /*  FAT12: BPB parsing, cluster arithmetic, the read-only consistency
     checker, and file recovery (copy out files, zero-filling bad spots).  */
-
 #include "fdchk.h"
 
 static WORD rd16(const BYTE * p) { return (WORD) (p[0] | (p[1] << 8)); }
@@ -23,55 +22,79 @@ static DWORD rd32(const BYTE * p) {
   return (DWORD) p[0]        | ((DWORD) p[1] << 8)
        | ((DWORD) p[2] << 16) | ((DWORD) p[3] << 24);
 }
-
 int parse_bpb(const BYTE * s) {
-  G.bytes_per_sec   = rd16(s + 0x0B);
-  G.sec_per_cluster = s[0x0D];
-  G.reserved_sec    = rd16(s + 0x0E);
-  G.num_fats        = s[0x10];
-  G.root_entries    = rd16(s + 0x11);
-  G.total_sec       = rd16(s + 0x13);
+  int bps       = rd16(s + 0x0B);
+  int spc       = s[0x0D];
+  int reserved  = rd16(s + 0x0E);
+  int nfats     = s[0x10];
+  int root_ent  = rd16(s + 0x11);
+  int total     = rd16(s + 0x13);
+  int fat_size  = rd16(s + 0x16);
+  int spt       = rd16(s + 0x18);
+  int heads     = rd16(s + 0x1A);
+  if (total == 0) total = (int) rd32(s + 0x20);
+  if (bps != SECTOR_SIZE)                 return 0;
+  if (spc == 0)                           return 0;
+  if (nfats == 0)                         return 0;
+  if (fat_size == 0)                      return 0;
+  if (reserved == 0)                      return 0;
+  if (total == 0 || total > MAX_SECTORS)   return 0;
+  int root_sec   = (root_ent * 32 + bps - 1) / bps;
+  int data_start = reserved + nfats * fat_size + root_sec;
+  if (data_start >= total)                return 0;
+  int clusters = (total - data_start) / spc;
+  if (clusters < 1)                       return 0;
+  /*  The FAT must be able to hold clusters+2 twelve-bit entries, or every
+      fat12_get/fat12_set walks off the end of a buffer sized from fat_size.  */
+  if (fat_size * SECTOR_SIZE < ((clusters + 2) * 3 + 1) / 2) return 0;
+  /*  Physical layout: trust a standard geometry over the BPB's own numbers,
+      which are the first thing to go on a half-overwritten boot sector.  */
+  const FloppyGeom * g = geom_for_bpb(total, spt, heads);
+  if (!g) g = geom_for_size(total);
+  int cyls;
+  if (g) {
+    cyls = g->cyls; heads = g->heads; spt = g->spt;
+  } else {
+    if (spt <= 0 || spt > MAX_SPT)       spt = 18;
+    if (heads <= 0 || heads > MAX_HEADS) heads = 2;
+    cyls = total / (spt * heads);
+    if (cyls <= 0 || cyls > MAX_CYLS)    cyls = MAX_CYLS;
+  }
+  G.bytes_per_sec   = bps;
+  G.sec_per_cluster = spc;
+  G.reserved_sec    = reserved;
+  G.num_fats        = nfats;
+  G.root_entries    = root_ent;
+  G.total_sec       = total;
   G.media_byte      = s[0x15];
-  G.fat_size        = rd16(s + 0x16);
-  if (G.total_sec == 0) G.total_sec = (int) rd32(s + 0x20);
-
-  if (G.bytes_per_sec != SECTOR_SIZE)               return 0;
-  if (G.sec_per_cluster == 0)                       return 0;
-  if (G.num_fats == 0)                              return 0;
-  if (G.fat_size == 0)                              return 0;
-  if (G.total_sec == 0 || G.total_sec > MAX_SECTORS) return 0;
-
-  int root_sec = (G.root_entries * 32 + G.bytes_per_sec - 1)
-               / G.bytes_per_sec;
-  G.data_start_sec = G.reserved_sec + G.num_fats * G.fat_size + root_sec;
-  G.total_clusters = (G.total_sec - G.data_start_sec) / G.sec_per_cluster;
+  G.fat_size        = fat_size;
+  G.spt             = spt;
+  G.heads           = heads;
+  G.cyls            = cyls;
+  G.data_start_sec  = data_start;
+  G.total_clusters  = clusters;
   G.vol_id = rd32(s + 0x27);
-
-  /*  The 11-byte volume label at 0x2B and the 8-byte FS-type label at
-      0x36 are informational.  Validate both as printable 7-bit ASCII;
-      if either is gibberish, fall back to something sensible.  Geometry,
-      validated above, is the authoritative answer.  */
   int label_ok = 1;
   for (int i = 0; i < 11; ++i) {
     BYTE c = s[0x2B + i];
-    if (c < 0x20 || c > 0x7E) { label_ok = 0; break; }
+    if (c < 0x20 || c > 0x7E)
+      { label_ok = 0;  break; }
   }
   if (label_ok) {
     memcpy(G.vol_label, s + 0x2B, 11);
     G.vol_label[11] = 0;
     for (int i = 10; i >= 0 && G.vol_label[i] == ' '; --i)
       G.vol_label[i] = 0;
-  } else {
-    G.vol_label[0] = 0;
-  }
+  } else G.vol_label[0] = 0;
 
   int fs_ok = 1;
   for (int i = 0; i < 8; ++i) {
     BYTE c = s[0x36 + i];
-    if (c < 0x20 || c > 0x7E) { fs_ok = 0; break; }
+    if (c < 0x20 || c > 0x7E)
+      { fs_ok = 0;  break; }
   }
-  if (fs_ok && (memcmp(s + 0x36, "FAT12", 5) == 0 ||
-                memcmp(s + 0x36, "FAT16", 5) == 0 ||
+  if (fs_ok && (memcmp(s + 0x36, "FAT12",  5) == 0 ||
+                memcmp(s + 0x36, "FAT16",  5) == 0 ||
                 memcmp(s + 0x36, "FAT   ", 6) == 0)) {
     memcpy(G.fs_type, s + 0x36, 8);
     G.fs_type[8] = 0;
@@ -85,29 +108,29 @@ int parse_bpb(const BYTE * s) {
   }
   return 1;
 }
-
-/*  Clamp LBA -> cluster number; -1 if before the data area.  */
+/*  Clamp LBA -> cluster number; -1 if before the data area or if no geometry
+    has been established yet.  */
 int lba_to_cluster(DWORD lba) {
+  if (G.sec_per_cluster <= 0) return -1;
   if ((int) lba < G.data_start_sec) return -1;
   return 2 + ((int) lba - G.data_start_sec) / G.sec_per_cluster;
 }
 DWORD cluster_to_lba(int cl) {
-  return (DWORD) (G.data_start_sec + (cl - 2) * G.sec_per_cluster);
+  return G.data_start_sec + (cl - 2) * G.sec_per_cluster;
 }
-
 void name83_to_str(const FatDirEntry * e, char * out) {
   int n = 0;
   for (int i = 0; i < 8 && e->name[i] != ' '; ++i) out[n++] = e->name[i];
   int has_ext = 0;
   for (int i = 8; i < 11; ++i)
-    if (e->name[i] != ' ') { has_ext = 1; break; }
+    if (e->name[i] != ' ')
+      { has_ext = 1;  break; }
   if (has_ext) {
     out[n++] = '.';
     for (int i = 8; i < 11 && e->name[i] != ' '; ++i) out[n++] = e->name[i];
   }
   out[n] = 0;
 }
-
 /*  FAT12 entry get/set: 12-bit, packed two per three bytes, little-endian.  */
 WORD fat12_get(const BYTE * fat, int n) {
   int ofs = n + (n >> 1);
@@ -123,10 +146,7 @@ void fat12_set(BYTE * fat, int n, WORD v) {
   fat[ofs + 1] = (BYTE) (w >> 8);
 }
 
-/*  Filesystem checker - walks FAT12 for cross-linked clusters, lost
-    chains, truncated/excess chains and bad directory entries.  Read-only;
-    reports via a popup and a log file.  */
-
+/*  Filesystem checker.  */
 #define CHK_MAX_ISSUES 256
 
 typedef struct {
@@ -135,7 +155,6 @@ typedef struct {
   int  cluster;
   char what[224];  /*  wide enough for a deep path plus the message  */
 } ChkIssue;
-
 /*  Append an issue if there is room.  */
 static void chk_add(ChkIssue * issues, int * n, int kind, int cluster,
                     const char * what) {
@@ -145,9 +164,7 @@ static void chk_add(ChkIssue * issues, int * n, int kind, int cluster,
   iss->cluster = cluster;
   lstrcpynA(iss->what, what, sizeof iss->what);
 }
-
-/*  Walk one cluster chain, marking each cluster's owner.  Returns the
-    chain length, or -1 cycle / -2 out-of-range / -3 bad cluster hit.  */
+/*  Walk one cluster chain, marking each cluster's owner.  */
 static int chk_walk_chain(const BYTE * fat, WORD start, WORD * owner,
                           int my_id, ChkIssue * issues, int * n_issues,
                           const char * path) {
@@ -163,8 +180,7 @@ static int chk_walk_chain(const BYTE * fat, WORD start, WORD * owner,
       chk_add(issues, n_issues, 6, cl, w);
       return -1;
     }
-    owner[cl] = (WORD) my_id;
-    cnt++;
+    owner[cl] = (WORD) my_id;  cnt++;
     WORD nx = fat12_get(fat, cl);
     if (nx == 0xFF7) {
       wsprintfA(w, "chain (%s) contains BAD cluster %d", path, cl);
@@ -183,26 +199,22 @@ static int chk_walk_chain(const BYTE * fat, WORD start, WORD * owner,
   return cnt;
 }
 
-/*  Recursively walk a directory.  start_cluster == 0 means the root.  */
+/*  Recursively walk a directory.  */
 static int chk_walk_dir(DiskHandle * dh, const BYTE * fat,
                         WORD start_cluster, const char * path,
                         WORD * owner, int * file_id_ctr,
                         ChkIssue * issues, int * n_issues, int depth) {
   if (depth > 16) return 0;
-
   BYTE * buf = NULL;
   int n_entries = 0, dir_bytes = 0;
-
   if (start_cluster == 0) {
     int root_sec = (G.root_entries * 32 + SECTOR_SIZE - 1) / SECTOR_SIZE;
     dir_bytes = root_sec * SECTOR_SIZE;
     buf = (BYTE *) LocalAlloc(LPTR, dir_bytes);
     if (!buf) return 0;
     if (disk_read(dh, (DWORD) (G.reserved_sec + G.num_fats * G.fat_size),
-                  (WORD) root_sec, buf) != 0) {
-      LocalFree(buf);
-      return 0;
-    }
+                  (WORD) root_sec, buf) != 0)
+      { LocalFree(buf);  return 0; }
     n_entries = G.root_entries;
   } else {
     /*  Subdir cluster chain - walk it with a guard so a corrupt chain
@@ -232,7 +244,6 @@ static int chk_walk_dir(DiskHandle * dh, const BYTE * fat,
     }
     n_entries = dir_bytes / 32;
   }
-
   int n_files = 0;
   for (int i = 0; i < n_entries; ++i) {
     FatDirEntry * e = (FatDirEntry *) (buf + i * 32);
@@ -241,10 +252,7 @@ static int chk_walk_dir(DiskHandle * dh, const BYTE * fat,
     if (c0 == 0xE5) continue;
     if (e->attr == 0x0F) continue;        /*  LFN  */
     if (e->attr & 0x08) continue;         /*  volume label  */
-
-    char fname[16];
-    name83_to_str(e, fname);
-
+    char fname[16];  name83_to_str(e, fname);
     if (e->attr & 0x10) {
       /*  subdirectory  */
       if (e->name[0] == '.') continue;    /*  '.' and '..'  */
@@ -262,7 +270,6 @@ static int chk_walk_dir(DiskHandle * dh, const BYTE * fat,
                      file_id_ctr, issues, n_issues, depth + 1);
       continue;
     }
-
     /*  regular file  */
     if (e->size == 0 && e->start_lo == 0) continue;
     int id = ++(*file_id_ctr);
@@ -271,7 +278,6 @@ static int chk_walk_dir(DiskHandle * dh, const BYTE * fat,
     if (pn > 100) pn = 100;
     memcpy(file_path, path, pn);
     wsprintfA(file_path + pn, "/%s", fname);
-
     if (e->start_lo == 0 && e->size > 0) {
       char w[224];
       wsprintfA(w, "%s has size %lu but no start cluster",
@@ -293,14 +299,13 @@ static int chk_walk_dir(DiskHandle * dh, const BYTE * fat,
       n_files++;
     }
   }
-
   LocalFree(buf);
   return n_files;
 }
 
 int chkfs_worker(DiskHandle * dh) {
   if (!G.has_fat) {
-    /*  chkfs may run before the normal BPB step; (re-)read it now.  */
+    /*  chkfs may run before the normal BPB step.  */
     BYTE bpb[SECTOR_SIZE];
     if (disk_read(dh, 0, 1, bpb) == 0 && parse_bpb(bpb)) {
       G.has_fat = 1;
@@ -314,7 +319,6 @@ int chkfs_worker(DiskHandle * dh) {
       return 0;
     }
   }
-
   ui_status("Reading FAT...");
   int fat_bytes = G.fat_size * SECTOR_SIZE;
   BYTE * fat   = (BYTE *) LocalAlloc(LPTR, fat_bytes);
@@ -324,14 +328,10 @@ int chkfs_worker(DiskHandle * dh) {
   ChkIssue * issues = (ChkIssue *) LocalAlloc(LPTR,
       CHK_MAX_ISSUES * sizeof(ChkIssue));
   int n_issues = 0, file_id_ctr = 0, n_lost = 0;
-
   if (!fat || !fat2 || !owner || !issues) goto done;
-
   if (disk_read(dh, (DWORD) G.reserved_sec, (WORD) G.fat_size, fat) != 0) {
-    chk_add(issues, &n_issues, 4, 0, "Primary FAT unreadable");
-    goto report;
+    chk_add(issues, &n_issues, 4, 0, "Primary FAT unreadable");  goto report;
   }
-
   /*  Cross-check FAT #1 against FAT #2.  */
   if (G.num_fats >= 2 &&
       disk_read(dh, (DWORD) (G.reserved_sec + G.fat_size),
@@ -343,15 +343,12 @@ int chkfs_worker(DiskHandle * dh) {
         break;
       }
   }
-
   /*  Pre-paint: untested + system area; the walk recolours the rest.  */
   for (int i = 0; i < MAX_SECTORS; ++i) G.state[i] = ST_UNTESTED;
   mark_system_sectors();
   SendMessageA(G.hMain, WM_APP_REPAINT, 0, 0);
-
   ui_status("Walking directory tree...");
   chk_walk_dir(dh, fat, 0, "/", owner, &file_id_ctr, issues, &n_issues, 0);
-
   /*  Paint each data cluster by its FAT state and ownership:
         marked bad      -> ST_BAD_OLD
         free            -> left ST_UNTESTED
@@ -379,7 +376,6 @@ int chkfs_worker(DiskHandle * dh) {
       if ((int) lba + s < MAX_SECTORS) G.state[lba + s] = ST_BAD_NEW;
   }
   SendMessageA(G.hMain, WM_APP_REPAINT, 0, 0);
-
   /*  Lost chains: any allocated cluster no walked file claimed.  */
   ui_status("Checking for lost clusters...");
   for (int n = 2; n < G.total_clusters + 2; ++n) {
@@ -393,12 +389,10 @@ int chkfs_worker(DiskHandle * dh) {
               n_lost, n_lost == 1 ? "" : "s");
     chk_add(issues, &n_issues, 1, 0, w);
   }
-
 report: {
   char log_full[MAX_PATH];
   log_path(log_full, "fdchk-chkfs.log");
-  HANDLE log = CreateFileA(log_full, GENERIC_WRITE, 0, NULL,
-      CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  HANDLE log = log_create("fdchk-chkfs.log");
   if (log != INVALID_HANDLE_VALUE) {
     SYSTEMTIME t;
     GetLocalTime(&t);
@@ -420,7 +414,6 @@ report: {
     }
     CloseHandle(log);
   }
-
   char summary[600];
   if (n_issues == 0) {
     wsprintfA(summary,
@@ -456,7 +449,6 @@ report: {
                 MB_OK | MB_ICONWARNING);
   }
 }
-
 done:
   if (fat)    LocalFree(fat);
   if (fat2)   LocalFree(fat2);
@@ -466,15 +458,12 @@ done:
 }
 
 /*  Recovery - copy out files, zero-filling bad regions, write a log.  */
-
 #define MAX_REC_DEPTH 16
-
 static int sector_is_bad(DWORD lba) {
   if (lba >= MAX_SECTORS) return 0;
   BYTE s = G.state[lba];
   return s == ST_BAD_NEW || s == ST_BAD_OLD;
 }
-
 /*  Walk a file's chain; return the number of clusters touching a bad
     sector, and the cluster count via n_clusters.  */
 static int file_bad_clusters(const BYTE * fat, WORD start, int * n_clusters) {
@@ -482,17 +471,16 @@ static int file_bad_clusters(const BYTE * fat, WORD start, int * n_clusters) {
   while (cl >= 2 && cl < G.total_clusters + 2 && cnt < G.total_clusters) {
     DWORD lba = cluster_to_lba(cl);
     for (int s = 0; s < G.sec_per_cluster; ++s)
-      if (sector_is_bad(lba + s)) { bad++; break; }
+      if (sector_is_bad(lba + s)) { bad++;  break; }
     cnt++;
     WORD nx = fat12_get(fat, cl);
     if (nx >= 0xFF8) break;
-    if (nx == 0xFF7) { bad++; break; }
+    if (nx == 0xFF7) { bad++;  break; }
     cl = nx;
   }
   if (n_clusters) *n_clusters = cnt;
   return bad;
 }
-
 /*  Copy a file out, zero-filling bad clusters.  Returns the hole count.  */
 static int copy_file_skipping_bad(DiskHandle * d, const BYTE * fat,
                                   WORD start, DWORD size,
@@ -502,7 +490,6 @@ static int copy_file_skipping_bad(DiskHandle * d, const BYTE * fat,
   if (h == INVALID_HANDLE_VALUE) return -1;
   BYTE * buf = (BYTE *) LocalAlloc(LPTR, 8 * SECTOR_SIZE);
   if (!buf) { CloseHandle(h); return -1; }
-
   int cl = start, holes = 0, cnt = 0;
   DWORD remaining = size;
   while (cl >= 2 && cl < G.total_clusters + 2
@@ -510,11 +497,9 @@ static int copy_file_skipping_bad(DiskHandle * d, const BYTE * fat,
     DWORD lba = cluster_to_lba(cl);
     int bytes = G.sec_per_cluster * SECTOR_SIZE;
     if ((DWORD) bytes > remaining) bytes = remaining;
-
     int any_bad = 0;
     for (int s = 0; s < G.sec_per_cluster; ++s)
-      if (sector_is_bad(lba + s)) { any_bad = 1; break; }
-
+      if (sector_is_bad(lba + s)) { any_bad = 1;  break; }
     if (any_bad) {
       memzero(buf, bytes);
       holes++;
@@ -533,8 +518,7 @@ static int copy_file_skipping_bad(DiskHandle * d, const BYTE * fat,
     if (nx >= 0xFF8 || nx == 0xFF7) break;
     cl = nx;
   }
-  LocalFree(buf);
-  CloseHandle(h);
+  LocalFree(buf);  CloseHandle(h);
   return holes;
 }
 
@@ -545,11 +529,8 @@ typedef struct {
   HANDLE       log;
   int          recovered, partial, subdirs;
 } RecCtx;
-
 static void recover_dir_at_cluster(RecCtx * ctx, WORD start_cluster,
                                    const char * out_path, int depth);
-
-/*  Walk an in-memory directory buffer; start_cluster == 0 means root.  */
 static void recover_dir_buf(RecCtx * ctx, BYTE * buf, int n_entries,
                             const char * out_path, int depth) {
   if (depth > MAX_REC_DEPTH) return;
@@ -561,7 +542,6 @@ static void recover_dir_buf(RecCtx * ctx, BYTE * buf, int n_entries,
     if (c0 == 0x05) e->name[0] = (char) 0xE5;
     if (e->attr == 0x0F) continue;        /*  LFN  */
     if (e->attr & 0x08) continue;         /*  volume label  */
-
     char fname[16];
     if (e->attr & 0x10) {
       /*  subdirectory  */
@@ -577,7 +557,6 @@ static void recover_dir_buf(RecCtx * ctx, BYTE * buf, int n_entries,
       recover_dir_at_cluster(ctx, e->start_lo, sub_path, depth + 1);
       continue;
     }
-
     if (e->size == 0) continue;
     name83_to_str(e, fname);
     if (!fname[0]) continue;
@@ -599,7 +578,6 @@ static void recover_dir_buf(RecCtx * ctx, BYTE * buf, int n_entries,
 static void recover_dir_at_cluster(RecCtx * ctx, WORD start_cluster,
                                    const char * out_path, int depth) {
   if (depth > MAX_REC_DEPTH) return;
-
   if (start_cluster == 0) {
     int root_sec = (G.root_entries * 32 + SECTOR_SIZE - 1) / SECTOR_SIZE;
     BYTE * buf = (BYTE *) LocalAlloc(LPTR, root_sec * SECTOR_SIZE);
@@ -611,7 +589,6 @@ static void recover_dir_at_cluster(RecCtx * ctx, WORD start_cluster,
     LocalFree(buf);
     return;
   }
-
   int n_clusters = 0, cl = start_cluster;
   while (cl >= 2 && cl < G.total_clusters + 2
          && n_clusters < G.total_clusters) {
@@ -640,8 +617,7 @@ static void recover_dir_at_cluster(RecCtx * ctx, WORD start_cluster,
   LocalFree(buf);
 }
 
-/*  Recovery driver - synchronous, run from the UI thread (a floppy walk
-    is quick enough to not need its own worker).  */
+/*  Recovery driver.  */
 int do_recovery(HWND parent, const char * out_dir) {
   DiskHandle dh;
   if (!disk_open(&dh, G.drive)) {
@@ -662,11 +638,9 @@ int do_recovery(HWND parent, const char * out_dir) {
     LocalFree(fat); disk_unlock(&dh); disk_close(&dh);
     return 0;
   }
-
   char log_full[MAX_PATH];
   log_path(log_full, "fdchk-recovery.log");
-  HANDLE log = CreateFileA(log_full, GENERIC_WRITE, 0, NULL,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  HANDLE log = log_create("fdchk-recovery.log");
   if (log != INVALID_HANDLE_VALUE) {
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -679,25 +653,16 @@ int do_recovery(HWND parent, const char * out_dir) {
         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
         (unsigned long) G.bad_count);
   }
-
-  RecCtx ctx;
-  memzero(&ctx, sizeof ctx);
-  ctx.dh  = &dh;
-  ctx.fat = fat;
-  ctx.log = log;
+  RecCtx ctx;  memzero(&ctx, sizeof ctx);
+  ctx.dh  = &dh;  ctx.fat = fat;  ctx.log = log;
   recover_dir_at_cluster(&ctx, 0, out_dir, 0);
-
   if (log != INVALID_HANDLE_VALUE) {
     LOG_FMT(log,
         "\r\nDone.  %d files clean, %d with holes, %d subdirectories.\r\n",
         ctx.recovered, ctx.partial, ctx.subdirs);
     CloseHandle(log);
   }
-
-  LocalFree(fat);
-  disk_unlock(&dh);
-  disk_close(&dh);
-
+  LocalFree(fat);  disk_unlock(&dh);  disk_close(&dh);
   char msg[300];
   wsprintfA(msg,
       "Recovery complete.\r\n\r\n"
