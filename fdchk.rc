@@ -35,11 +35,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "iczelia\0"
       VALUE "FileDescription",  "Floppy Disk Checker\0"
-      VALUE "FileVersion",      "1.0.2\0"
+      VALUE "FileVersion",      "1.0.3\0"
       VALUE "InternalName",     "fdchk\0"
       VALUE "OriginalFilename", "fdchk.exe\0"
       VALUE "ProductName",      "Floppy Disk Checker\0"
-      VALUE "ProductVersion",   "1.0.2\0"
+      VALUE "ProductVersion",   "1.0.3\0"
     END
   END
   BLOCK "VarFileInfo" BEGIN VALUE "Translation", 0x0409, 1252 END

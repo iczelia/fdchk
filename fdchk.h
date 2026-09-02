@@ -41,7 +41,7 @@ int    x_sprintf(char * out, const char * fmt, ...);
 /*  Constants.  */
 #define APP_NAME     "Floppy Disk Checker"
 #define APP_CLASS    "FdchkMainWnd"
-#define APP_VERSION  "1.1"
+#define APP_VERSION  "1.0.3"
 #define WND_W        560
 #define WND_H        498
 #define MAX_SECTORS  5760     /*  2.88 MB, the largest format we handle  */
