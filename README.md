@@ -19,16 +19,21 @@ issues to Kamila Szewczyk <k@iczelia.net>. The project is hosted at
 | Diagnostic | Test seeks, alignment and sector IDs through `fdchk.vxd` |
 | Check filesystem | Find FAT12 cross-links, lost chains, cycles and size errors |
 
-The standard surface test does not write to sectors. If automatic bad-cluster
-marking is on, it writes `0xFF7` for each new bad cluster to every FAT. The
-filesystem check does not write to the disk. The thorough surface test writes
-four patterns to each sector, then writes the original data back. If this test
-stops during a write, it may damage the disk.
+The standard test reads every sector. It writes only when automatic bad-cluster
+marking is enabled. In that case, fdchk marks each new bad cluster as `0xFF7`
+in both FATs.
 
-The drive test shows one cell for each cylinder and head. Grey means good,
+The thorough test writes four patterns to each sector and checks each pattern.
+It then writes the original data back. Removing the disk or losing power before
+this finishes can damage files.
+
+The diagnostic test shows one cell for each cylinder and head. Grey means good,
 yellow means being tested, orange means wrong cylinder, purple means no address
 mark, and red means another read error. The VxD writes the full
 `ST0/ST1/ST2/C/H/R/N` result in `fdchk-diag.log`.
+
+The filesystem check reads the boot sector, both FATs and every directory. It
+reports errors but does not write to the disk.
 
 ## Disk operations
 
