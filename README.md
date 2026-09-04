@@ -1,63 +1,62 @@
-# fdchk - Floppy Disk Checker for Windows 9x
+# fdchk
 
-A surface scanner, FAT12 consistency checker, file-recovery utility,
-defragmenter and raw-FDC head diagnostic for Windows 9x (95/98/Me).
-Licensed under version 3 of the GNU GPL, and that version only
-(`GPL-3.0-only`) - the "any later version" option is not granted. See
-`LICENSE`. Report bugs to <k@iczelia.net>.
+fdchk scans, checks, recovers, formats and defragments FAT12 floppy disks on
+Windows 95, 98 and Me. It can send commands directly to the floppy controller
+to test alignment and address marks.
 
-![screenshot](gui.png)
+fdchk is licensed under GNU GPL version 3. See [LICENSE](LICENSE). Report
+issues to Kamila Szewczyk <k@iczelia.net>. The project is hosted at
+<https://github.com/iczelia/fdchk>.
 
-## Test modes
+![fdchk scanning a floppy disk](gui.png)
 
-1. Standard - read-only verification.  Reads every sector and reports
-   anything that does not come back cleanly.
-2. Thorough - destructive per-sector surface test: read the original,
-   then write-and-verify the original, its inverse, a PRNG block and that
-   block's inverse, and finally restore the original.
-3. Diagnostic - probes the drive with raw FDC commands through
-   `fdchk.vxd`, surfacing the full `ST0/ST1/ST2/C/H/R/N` result phase.
-4. Check filesystem - walks FAT12 read-only for cross-linked clusters,
-   lost chains, size mismatches, chain cycles and bad FAT entries.
+## Tests
 
-## Other operations
+| Test | Effect |
+| --- | --- |
+| Standard | Read every sector and report failures |
+| Thorough | Write and check four patterns, then restore each sector |
+| Diagnostic | Test seeks, alignment and sector IDs through `fdchk.vxd` |
+| Check filesystem | Find FAT12 cross-links, lost chains, cycles and size errors |
 
-- Recover - after a surface scan, walks the directory tree, copies out
-  every file with zero-filled holes where bad sectors fell, and writes
-  `fdchk-recovery.log`.  With auto-fix on, new bad clusters are marked
-  `0xFF7` in both FATs.
-- Format - FAT12 format at any capacity the drive supports.  *Quick*
-  rewrites the boot sector, both FATs and the root directory.  *Full* first
-  re-lays every track through the driver's track formatter (Int 21h 440Dh
-  CX=0842h, then CX=0862h to verify), which rewrites the sector ID address
-  marks, data address marks and CRCs.
-- Defrag - repacks files and subdirectories into contiguous low
-  clusters (depth-first, alphabetical at each level) and zeroes every
-  free cluster.
-- Batch mode - after each scan, prompts to insert the next disk.
-- Logs - an in-app viewer for the log files in `<exe-dir>\logs`.
+The standard surface test does not write to sectors. If automatic bad-cluster
+marking is on, it writes `0xFF7` for each new bad cluster to every FAT. The
+filesystem check does not write to the disk. The thorough surface test writes
+four patterns to each sector, then writes the original data back. If this test
+stops during a write, it may damage the disk.
 
-## Diagnostic colours
+The drive test shows one cell for each cylinder and head. Grey means good,
+yellow means being tested, orange means wrong cylinder, purple means no address
+mark, and red means another read error. The VxD writes the full
+`ST0/ST1/ST2/C/H/R/N` result in `fdchk-diag.log`.
 
-In Diagnostic mode the grid becomes a `cyl x head` map, sized from the
-drive (160 cells for an 80-cylinder drive, 80 for a 40-cylinder one):
+## Disk operations
 
-| Colour | Meaning |
-|---|---|
-| Grey   | OK - `ST0 & 0xC0 == 0` and C matches |
-| Yellow | currently testing |
-| Orange | Wrong Cylinder - `ST2` bit 4, or C != cyl.  Head misalignment |
-| Purple | No Address Mark - `ST1`/`ST2` bit 0.  Track unformatted/severe |
-| Red    | other failure (CRC, timeout, controller fault) |
+File recovery copies every file it can read. It writes zeros where file data
+cannot be read and writes details to `fdchk-recovery.log`.
 
-## Build
+Quick format writes a new boot sector, FATs and root directory. Full format
+first formats and checks every track, including its sector IDs, address marks
+and CRCs. It sends format commands through the DOS block driver or directly to
+the FDC.
 
-Requires `i686-w64-mingw32-gcc` and `nasm`; `mtools` is needed only for
-`make floppy`.
+Defragmentation moves files and directories to lower cluster numbers. It works
+through subdirectories and sorts each directory by name. It then writes zeros
+to every free cluster. Batch mode asks for another disk after each scan. The
+log viewer reads files from `<program-directory>\logs`.
 
-```
-make           fdchk.exe + fdchk.vxd
-make floppy    fdchk.img - a 1.44 MB FAT12 image carrying the EXE
-make debug     with-CRT build carrying symbols
+## Building
+
+The release build needs `i686-w64-mingw32-gcc` and `nasm`. `mtools` is needed
+only for the floppy image.
+
+```sh
+make
+make floppy
+make debug
 make clean
 ```
+
+`make` builds `fdchk.exe` and its embedded `fdchk.vxd`. `make floppy` creates a
+1.44 MB FAT12 image containing the executable. The debug build uses the C
+runtime and retains symbols.

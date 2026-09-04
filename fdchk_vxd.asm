@@ -1,10 +1,8 @@
-;  fdchk -- Copyright (C) 2026 Kamila Szewczyk
-;  SPDX-License-Identifier: GPL-3.0-only
+;  Copyright (C) 2026 Kamila Szewczyk
 ;
 ;  This program is free software; you can redistribute it and/or modify
-;  it under the terms of version 3 of the GNU General Public License as
-;  published by the Free Software Foundation.  Version 3 is the only
-;  version of that license that applies to this program.
+;  it under the terms of the GNU General Public License as published by
+;  the Free Software Foundation, version 3.
 ;
 ;  This program is distributed in the hope that it will be useful,
 ;  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -14,10 +12,8 @@
 ;  You should have received a copy of the GNU General Public License
 ;  along with this program. If not, see <http://www.gnu.org/licenses/>.
 ;
-;  Routines for raw NEC uPD765 floppy-controller access for Windows 9x.
-;  This VxD builds the LE container by hand, as seen below. One fixup
-;  is necessary: the DDB.Control_Proc pointer at image offset 24. Fully
-;  asynchronous.
+;  Asynchronous NEC uPD765 access for Windows 9x.  The source emits its LE
+;  container and fixes up the DDB.Control_Proc pointer at image offset 24.
 
 bits 32
 cpu  486
@@ -29,7 +25,7 @@ org  0
 %define PAGE_SIZE    0x1000
 %define PAGE_COUNT   4
 
-;  MZ / DOS stub.
+;  MZ/DOS stub.
 mz_start:
   dw      0x5A4D                   ; 'MZ'
   dw      0x40                     ; bytes on last page
@@ -48,7 +44,7 @@ mz_start:
   times   0x3C - ($ - mz_start) db 0
   dd      LE_OFF                   ; e_lfanew
 
-;  LE header.  Four 4 KB objects and pages, one fixup record.
+;  LE header: four 4 KB objects, four pages and one fixup.
 le_start:
   dw      0x454C                   ; 'LE'
   db      0                        ; byte order
@@ -102,7 +98,7 @@ le_start:
   dw      0                        ; VxD device id = UNDEFINED
   dw      0x0400                   ; VxD DDK version
 
-;  Loader section: object table, page map, names, entry + fixup tables.
+;  Loader tables.
 obj_table:
   ;  1: LCOD - locked code, read|write|exec|preload|big
   dd      PAGE_SIZE, 0, 0x00002047, 1, 1
@@ -128,8 +124,7 @@ res_names:
   dw      0                        ; ordinal
   db      0                        ; end of table
 
-;  Entry table.  Ordinal 1 exports the DDB, necessary for the VMM locating
-;  it when loading the module.
+;  Ordinal 1 exports the DDB.
 entry_table:
   db      1                        ; one entry in this bundle
   db      3                        ; bundle type: 32-bit entry
@@ -138,8 +133,7 @@ entry_table:
   dd      0                        ; offset of ddb_start within the object
   db      0                        ; end of entry table
 
-;  One entry per page plus a terminator.  Page 1 owns the only record; the
-;  empty pages start where it ends, so their ranges are zero-length.
+;  One fixup offset per page plus a terminator.
 fixup_pages:
   dd      0                        ; page 1: first record
   dd      fixup_end - fixup_recs   ; page 2: none
@@ -157,14 +151,12 @@ loader_end:
 
   times   IMAGE_OFF - ($ - mz_start) db 0
 
-;  VxD image starts here.
-
-;  VMM message codes
+;  VMM messages.
 %define Sys_Dynamic_Device_Init    0x001B
 %define Sys_Dynamic_Device_Exit    0x001C
 %define W32_DEVICEIOCONTROL        0x0023
 
-;  DIOC_PARAMS layout (ESI on W32_DEVICEIOCONTROL)
+;  DIOC_PARAMS layout; ESI points here during W32_DEVICEIOCONTROL.
 %define DIOC_dwIoControlCode       0x0C
 %define DIOC_lpvInBuffer           0x10
 %define DIOC_cbInBuffer            0x14
@@ -188,7 +180,7 @@ loader_end:
 %define IOCTL_FDC_END              0x008C ; hand the controller back
 %define IOCTL_FDC_IDENT            0x008E
 
-;  FDC ports
+;  FDC ports.
 %define FDC_DOR                    0x3F2
 %define FDC_MSR                    0x3F4
 %define FDC_FIFO                   0x3F5
@@ -197,7 +189,7 @@ loader_end:
 %define FDC_DIR                    0x3F7   ; read:  bit 7 = disk change
 %define FDC_CCR                    0x3F7   ; write: data rate select
 
-;  FDC commands
+;  FDC commands.
 %define FDC_CMD_SPECIFY            0x03
 %define FDC_CMD_RECAL              0x07
 %define FDC_CMD_SENSE_INT          0x08
@@ -205,41 +197,41 @@ loader_end:
 %define FDC_CMD_READ_ID            0x4A   ; READ ID + MFM
 %define FDC_CMD_FORMAT             0x4D   ; FORMAT TRACK + MFM
 
-;  FdcIn  (user input buffer, EBP in dispatch)
-%define FdcIn_drive                0
-%define FdcIn_head                 1
-%define FdcIn_cyl                  2
-%define FdcIn_sec                  3      ; FORMAT: sectors per track
-%define FdcIn_size_code            4      ; FORMAT: N (2 = 512 bytes)
-%define FdcIn_gpl                  5      ; FORMAT: gap length
-%define FdcIn_filler               6      ; FORMAT: data-field fill byte
-%define FdcIn_rate                 7      ; CCR data rate
-%define FdcIn_spec1                8      ; SPECIFY SRT/HUT
-%define FdcIn_spec2                9      ; SPECIFY HLT/ND
-%define FdcIn_flags                10     ; MOTOR: bit 0 spindle, bit 1 gate
+;  EBP points to the input buffer while a request runs.
+%define fdc_in_drive                0
+%define fdc_in_head                 1
+%define fdc_in_cyl                  2
+%define fdc_in_sec                  3      ; FORMAT: sectors per track
+%define fdc_in_size_code            4      ; FORMAT: N (2 = 512 bytes)
+%define fdc_in_gpl                  5      ; FORMAT: gap length
+%define fdc_in_filler               6      ; FORMAT: data-field fill byte
+%define fdc_in_rate                 7      ; CCR data rate
+%define fdc_in_spec1                8      ; SPECIFY SRT/HUT
+%define fdc_in_spec2                9      ; SPECIFY HLT/ND
+%define fdc_in_flags                10     ; MOTOR: bit 0 motor, bit 1 gate
                                           ; POLL:  bit 0 sense the interrupt
-%define FdcIn_total_size           11
+%define fdc_in_total_size           11
 
-;  FdcOut (user output buffer, EDI in FDC routines)
-%define FdcOut_status              0
-%define FdcOut_st0                 1      ; ST0,ST1,ST2,C,H,R,N follow: 1..7,
-%define FdcOut_cur_cyl             8
-%define FdcOut_result_n            9
-%define FdcOut_dir_before          10
-%define FdcOut_dir_after           11
-%define FdcOut_stage               12
-%define FdcOut_msr                 13
-%define FdcOut_cmos                14
-%define FdcOut_total_size          16
+;  Output buffer; EDI points here in FDC routines.
+%define fdc_out_status              0
+%define fdc_out_st0                 1      ; ST0,ST1,ST2,C,H,R,N follow: 1..7
+%define fdc_out_cur_cyl             8
+%define fdc_out_result_n            9
+%define fdc_out_dir_before          10
+%define fdc_out_dir_after           11
+%define fdc_out_stage               12
+%define fdc_out_msr                 13
+%define fdc_out_cmos                14
+%define fdc_out_total_size          16
 
-;  FdcOut_status values that are not an error.
+;  fdc_out_status values that are not an error.
 %define FDC_ST_OK                  0x00
 %define FDC_ST_BUSY                0x01   ; ask again in a moment
 
 ;  Interface version, reported by IOCTL_FDC_IDENT.
 %define FDC_VXD_VERSION            0x0200
 
-;  The DDB
+;  Device descriptor block.
 ddb_start:
   dd      0                        ;  0 DDB_Next (set by VMM)
   dw      0x0400                   ;  4 DDB_SDK_Version
@@ -273,13 +265,12 @@ control_proc:
   je      .exit
   cmp     eax, W32_DEVICEIOCONTROL
   je      do_ioctl
-  ; any other message: succeed and ignore
+  ;  Ignore other messages.
 .ok:
   clc
   ret
 .exit:
-  ;  Unloaded, possibly because the owning process died mid-scan.  Leave
-  ;  the controller the way the system's own driver expects it.
+  ;  Restore the controller after any interrupted scan.
   call    fdc_release
   clc
   ret
@@ -292,16 +283,16 @@ do_ioctl:
   push    esi
 
   mov     edi, [esi + DIOC_lpvOutBuffer]
-  ; zero the FdcOut struct if the user supplied an out-buffer
+  ;  Clear the supplied output buffer.
   test    edi, edi
   jz      .no_zero
   push    edi
   push    ecx
   push    eax
   mov     ecx, [esi + DIOC_cbOutBuffer]     ; never overrun
-  cmp     ecx, FdcOut_total_size
+  cmp     ecx, fdc_out_total_size
   jbe     .zero
-  mov     ecx, FdcOut_total_size
+  mov     ecx, fdc_out_total_size
 .zero:
   xor     al, al
   cld
@@ -314,12 +305,12 @@ do_ioctl:
 
   cmp     eax, DIOC_GETVERSION
   je      .ioc_version
-  cmp     dword [esi + DIOC_cbOutBuffer], FdcOut_total_size
+  cmp     dword [esi + DIOC_cbOutBuffer], fdc_out_total_size
   jb      .out_inval
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
   jz      .len_ok
-  cmp     dword [esi + DIOC_cbInBuffer], FdcIn_total_size
+  cmp     dword [esi + DIOC_cbInBuffer], fdc_in_total_size
   jb      .out_inval
 .len_ok:
   cmp     eax, IOCTL_FDC_CMOS
@@ -358,33 +349,33 @@ do_ioctl:
   mov     word [edi], FDC_VXD_VERSION
   jmp     .ok
 
-;  IOCTL_FDC_RESET
+;  Reset the controller.
 .ioc_reset:
   test    edi, edi
   jz      .out_inval
   call    fdc_reset
   jmp     .ok
 
-;  IOCTL_FDC_END: motors off, interrupt and DMA gate open again.
+;  Stop motors and reopen the interrupt/DMA gate.
 .ioc_end:
   test    edi, edi
   jz      .out_inval
   call    fdc_release
   jmp     .ok
 
-;  IOCTL_FDC_MOTOR (in: drive, flags)
+;  Set motor and gate state.
 .ioc_motor:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
   jz      .out_inval
   test    edi, edi
   jz      .out_inval
-  movzx   eax, byte [ebp + FdcIn_drive]
-  movzx   ebx, byte [ebp + FdcIn_flags]
+  movzx   eax, byte [ebp + fdc_in_drive]
+  movzx   ebx, byte [ebp + fdc_in_flags]
   call    fdc_set_dor
   jmp     .ok
 
-;  IOCTL_FDC_SPECIFY (in: rate, spec1, spec2)
+;  Set data rate and drive timing.
 .ioc_specify:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
@@ -394,43 +385,43 @@ do_ioctl:
   call    fdc_specify
   jmp     .ok
 
-;  IOCTL_FDC_RECAL (in: drive)
+;  Seek track 0.
 .ioc_recal:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
   jz      .out_inval
   test    edi, edi
   jz      .out_inval
-  movzx   eax, byte [ebp + FdcIn_drive]
+  movzx   eax, byte [ebp + fdc_in_drive]
   call    fdc_issue_recal
   jmp     .ok
 
-;  IOCTL_FDC_SEEK (in: drive, head, cyl)
+;  Start a seek.
 .ioc_seek:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
   jz      .out_inval
   test    edi, edi
   jz      .out_inval
-  movzx   eax, byte [ebp + FdcIn_drive]
-  movzx   ebx, byte [ebp + FdcIn_head]
-  movzx   ecx, byte [ebp + FdcIn_cyl]
+  movzx   eax, byte [ebp + fdc_in_drive]
+  movzx   ebx, byte [ebp + fdc_in_head]
+  movzx   ecx, byte [ebp + fdc_in_cyl]
   call    fdc_issue_seek
   jmp     .ok
 
-;  IOCTL_FDC_READID (in: drive, head)
+;  Read a sector ID.
 .ioc_readid:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
   jz      .out_inval
   test    edi, edi
   jz      .out_inval
-  movzx   eax, byte [ebp + FdcIn_drive]
-  movzx   ebx, byte [ebp + FdcIn_head]
+  movzx   eax, byte [ebp + fdc_in_drive]
+  movzx   ebx, byte [ebp + fdc_in_head]
   call    fdc_issue_read_id
   jmp     .ok
 
-;  IOCTL_FDC_POLL (in: drive, flags bit 0 = sense the interrupt when idle)
+;  Poll the active command.
 .ioc_poll:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
@@ -440,7 +431,7 @@ do_ioctl:
   call    fdc_poll
   jmp     .ok
 
-;  IOCTL_FDC_RESULT: take the result phase if the controller is offering it.
+;  Collect the result phase when ready.
 .ioc_result:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
@@ -450,18 +441,17 @@ do_ioctl:
   call    fdc_result
   jmp     .ok
 
-;  IOCTL_FDC_DIR: sample the disk-change line.
+;  Sample the disk-change line.
 .ioc_dir:
   test    edi, edi
   jz      .out_inval
   mov     dx, FDC_DIR
   in      al, dx
-  mov     [edi + FdcOut_dir_before], al
-  mov     [edi + FdcOut_dir_after], al
+  mov     [edi + fdc_out_dir_before], al
+  mov     [edi + fdc_out_dir_after], al
   jmp     .ok
 
-;  IOCTL_FDC_FORMAT (in: drive, head, cyl, sec, size_code, gpl, filler,
-;  rate, spec1, spec2 - the whole FdcIn).  The caller has already seeked.
+;  Format one track.  The caller has positioned the head.
 .ioc_format:
   mov     ebp, [esi + DIOC_lpvInBuffer]
   test    ebp, ebp
@@ -471,15 +461,14 @@ do_ioctl:
   call    fdc_format_track
   jmp     .ok
 
-;  IOCTL_FDC_CMOS: report the BIOS's own record of what the drives are
+;  Read the BIOS drive types.
 .ioc_cmos:
   test    edi, edi
   jz      .out_inval
   call    fdc_read_cmos_floppy
   jmp     .ok
 
-;  IOCTL_FDC_IDENT: prove the driver is live, and report what it was
-;  handed.
+;  Identify the driver and echo the request details.
 .ioc_ident:
   test    edi, edi
   jz      .out_inval
@@ -500,9 +489,9 @@ do_ioctl:
   test    ebp, ebp
   jz      .skip_cb
   mov     ecx, [esi + DIOC_cbOutBuffer]
-  cmp     ecx, FdcOut_total_size
+  cmp     ecx, fdc_out_total_size
   jbe     .have_cb
-  mov     ecx, FdcOut_total_size
+  mov     ecx, fdc_out_total_size
 .have_cb:
   mov     [ebp], ecx
 .skip_cb:
@@ -515,13 +504,12 @@ do_ioctl:
   clc
   ret
 
-;  FDC primitives.  Convention: EDI = FdcOut*, results via [EDI + FdcOut_*].
-;  Other args in EAX/EBX/ECX as documented.  EDI/ESI/EBP preserved.
+;  EDI points to fdc_out.  Other arguments use EAX, EBX and ECX.
+;  This code does not change EDI, ESI or EBP.
 
 %define FDC_SPIN     20000
 
-;  fdc_wait_rqm_out: wait for MSR.RQM=1, DIO=0 (ready for a byte).
-;  CF set on timeout.
+;  Wait until the FDC accepts a byte.  CF is set on timeout.
 fdc_wait_rqm_out:
   mov     ecx, FDC_SPIN
 .spin:
@@ -534,15 +522,14 @@ fdc_wait_rqm_out:
   jnz     .spin
   mov     dx, FDC_MSR  ; Timed out.
   in      al, dx
-  mov     [edi + FdcOut_msr], al
+  mov     [edi + fdc_out_msr], al
   stc
   ret
 .ready:
   clc
   ret
 
-;  fdc_wait_rqm_in: wait for MSR.RQM=1, DIO=1 (FDC has a byte).
-;  CF set on timeout.
+;  Wait until the FDC has a byte ready.  CF is set on timeout.
 fdc_wait_rqm_in:
   mov     ecx, FDC_SPIN
 .spin:
@@ -559,7 +546,7 @@ fdc_wait_rqm_in:
   clc
   ret
 
-;  fdc_send_byte: AL -> FIFO after wait.  CF set on timeout.
+;  Send AL to the FIFO.  CF is set on timeout.
 fdc_send_byte:
   push    eax
   call    fdc_wait_rqm_out
@@ -573,7 +560,7 @@ fdc_send_byte:
   stc
   ret
 
-;  fdc_read_byte: FIFO -> AL.  CF set on timeout.
+;  Read the FIFO into AL.  CF is set on timeout.
 fdc_read_byte:
   call    fdc_wait_rqm_in
   jc      .err
@@ -586,25 +573,24 @@ fdc_read_byte:
   stc
   ret
 
-;  fdc_read_cmos_floppy: read CMOS 10h to determine drive types.
+;  Read the drive types from CMOS byte 10h.
 fdc_read_cmos_floppy:
   pushfd
   cli
   mov     al, 0x10                 ; index, NMI left enabled as we found it
   mov     dx, CMOS_INDEX
   out     dx, al
-  mov     ecx, 8                   ; brief settle before reading the data port
+  mov     ecx, 8                   ; short delay before reading the data port
 .d:
   in      al, dx
   loop    .d
   mov     dx, CMOS_DATA
   in      al, dx
-  mov     [edi + FdcOut_cmos], al
+  mov     [edi + fdc_out_cmos], al
   popfd
   ret
 
-;  fdc_flush: wait until the controller will accept a command phase,
-;  discarding anything it is still offering.  CF set if it never does.
+;  Read old bytes and wait for a command phase.
 fdc_flush:
   push    eax
   push    ecx
@@ -635,7 +621,7 @@ fdc_flush:
   clc
   ret
 
-;  fdc_release: motors off, gate open.
+;  Stop motors and open the gate.
 fdc_release:
   pushfd
   cli
@@ -649,9 +635,7 @@ fdc_release:
   popfd
   ret
 
-;  fdc_set_dor (EAX = drive, EBX = flags: bit 0 spindle, bit 1 gate).
-;  Bit 3 of the DOR gates the controller's interrupt and DMA lines onto the
-;  bus.
+;  Set the DOR.  EAX is the drive; EBX selects the motor and gate.
 fdc_set_dor:
   push    eax
   push    ebx
@@ -673,7 +657,7 @@ fdc_set_dor:
   or      al, ah
   mov     dx, FDC_DOR
   out     dx, al
-  mov     ecx, 100                 ; short post-DOR settle delay
+  mov     ecx, 100                 ; short delay after writing DOR
 .d:
   in      al, dx
   loop    .d
@@ -683,7 +667,7 @@ fdc_set_dor:
   pop     eax
   ret
 
-;  fdc_gate_shut / fdc_gate_open (EAX = drive).
+;  Close or open the gate for the drive in EAX.
 fdc_gate_shut:
   push    ebx
   mov     ebx, 1                   ; motor on, gate shut
@@ -697,8 +681,7 @@ fdc_gate_open:
   pop     ebx
   ret
 
-;  drain_result_phase: read up to 7 bytes into [edi+FdcOut_st0+i] and
-;  record the count in [edi+FdcOut_result_n].
+;  Read up to seven result bytes.
 drain_result_phase:
   push    ebx
   push    eax
@@ -708,7 +691,7 @@ drain_result_phase:
   jc      .done
   mov     dx, FDC_FIFO
   in      al, dx
-  mov     [edi + FdcOut_st0 + ebx], al
+  mov     [edi + fdc_out_st0 + ebx], al
   inc     ebx
   cmp     ebx, 7
   jae     .done
@@ -717,13 +700,12 @@ drain_result_phase:
   test    al, 0x10
   jnz     .next
 .done:
-  mov     [edi + FdcOut_result_n], bl
+  mov     [edi + fdc_out_result_n], bl
   pop     eax
   pop     ebx
   ret
 
-;  fdc_reset: DOR-pulse the FDC, then SENSE INT until it stops reporting
-;  one.
+;  Pulse DOR, then drain pending interrupts.
 fdc_reset:
   pushfd
   cli
@@ -746,46 +728,45 @@ fdc_reset:
   call    fdc_sense_int_raw
   pop     ecx
   jc      .done
-  mov     al, [edi + FdcOut_st0]
+  mov     al, [edi + fdc_out_st0]
   and     al, 0xC0
   cmp     al, 0x80
   je      .done
   loop    .sense
 .done:
-  mov     byte [edi + FdcOut_status], 0
+  mov     byte [edi + fdc_out_status], 0
   popfd
   ret
 
-;  fdc_sense_int_raw: SENSE INT, store the result into [edi+FdcOut_st0] and
-;  [edi+FdcOut_cur_cyl].
+;  Sense the interrupt and save ST0 and the current cylinder.
 fdc_sense_int_raw:
   mov     al, FDC_CMD_SENSE_INT
   call    fdc_send_byte
   jc      .err
   call    fdc_read_byte
   jc      .err
-  mov     [edi + FdcOut_st0], al
-  mov     byte [edi + FdcOut_result_n], 1
+  mov     [edi + fdc_out_st0], al
+  mov     byte [edi + fdc_out_result_n], 1
   and     al, 0xC0
   cmp     al, 0x80                 ; invalid command: no PCN byte follows
   je      .done
   call    fdc_read_byte
   jc      .err
-  mov     [edi + FdcOut_cur_cyl], al
-  mov     byte [edi + FdcOut_result_n], 2
+  mov     [edi + fdc_out_cur_cyl], al
+  mov     byte [edi + fdc_out_result_n], 2
 .done:
   clc
   ret
 .err:
-  mov     byte [edi + FdcOut_status], 0xE0
+  mov     byte [edi + fdc_out_status], 0xE0
   stc
   ret
 
-;  fdc_specify (EBP = FdcIn*): data rate and drive timings.
+;  Set the data rate and drive timings.
 fdc_specify:
   pushfd
   cli
-  movzx   eax, byte [ebp + FdcIn_rate]
+  movzx   eax, byte [ebp + fdc_in_rate]
   and     al, 3
   mov     dx, FDC_CCR
   out     dx, al
@@ -794,21 +775,20 @@ fdc_specify:
   mov     al, FDC_CMD_SPECIFY
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_spec1]
+  mov     al, [ebp + fdc_in_spec1]
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_spec2]
+  mov     al, [ebp + fdc_in_spec2]
   call    fdc_send_byte
   jc      .err
   popfd
   ret
 .err:
-  mov     byte [edi + FdcOut_status], 0xE4
+  mov     byte [edi + fdc_out_status], 0xE4
   popfd
   ret
 
-;  fdc_issue_recal (EAX = drive): start a seek to track 0 and come straight
-;  back.
+;  Start a seek to track 0.
 fdc_issue_recal:
   push    eax
   pushfd
@@ -828,12 +808,12 @@ fdc_issue_recal:
   ret
 .err:
   call    fdc_reset                ; never hand back a half-commanded FDC
-  mov     byte [edi + FdcOut_status], 0xE1   ; after the reset, which clears it
+  mov     byte [edi + fdc_out_status], 0xE1   ; after the reset, which clears it
   popfd
   add     esp, 4
   ret
 
-;  fdc_issue_seek (EAX = drive, EBX = head, ECX = cyl): start the step.
+;  Start a seek to EBX:ECX on the drive in EAX.
 fdc_issue_seek:
   push    eax
   push    ebx
@@ -862,13 +842,12 @@ fdc_issue_seek:
   ret
 .err:
   call    fdc_reset                ; never hand back a half-commanded FDC
-  mov     byte [edi + FdcOut_status], 0xE2   ; after the reset, which clears it
+  mov     byte [edi + fdc_out_status], 0xE2   ; after the reset, which clears it
   popfd
   add     esp, 12
   ret
 
-;  fdc_issue_read_id (EAX = drive, EBX = head): start the search for a
-;  sector header.
+;  Search for a sector ID on the drive and head in EAX and EBX.
 fdc_issue_read_id:
   push    eax
   push    ebx
@@ -893,164 +872,160 @@ fdc_issue_read_id:
   ret
 .err:
   call    fdc_reset                ; never hand back a half-commanded FDC
-  mov     byte [edi + FdcOut_status], 0xE3   ; after the reset, which clears it
+  mov     byte [edi + fdc_out_status], 0xE3   ; after the reset, which clears it
   popfd
   add     esp, 8
   ret
 
-;  fdc_poll (EBP = FdcIn*): has the command finished?
+;  Poll the active command.
 fdc_poll:
   pushfd
   cli
   mov     dx, FDC_MSR
   in      al, dx
-  mov     [edi + FdcOut_msr], al
+  mov     [edi + fdc_out_msr], al
   test    al, 0x10                 ; CB: a command is still running
   jnz     .busy
-  test    byte [ebp + FdcIn_flags], 1
+  test    byte [ebp + fdc_in_flags], 1
   jz      .idle
-  ;  A seek reports completion only through its interrupt, and while the
-  ;  head is still moving SENSE INTERRUPT answers "invalid command".
+  ;  A moving seek answers SENSE INTERRUPT with "invalid command".
   call    fdc_sense_int_raw
   jc      .hard                    ; status already carries the error
-  mov     al, [edi + FdcOut_st0]
+  mov     al, [edi + fdc_out_st0]
   and     al, 0xC0
   cmp     al, 0x80
   je      .busy
 .idle:
-  mov     byte [edi + FdcOut_status], FDC_ST_OK
+  mov     byte [edi + fdc_out_status], FDC_ST_OK
 .done:
-  movzx   eax, byte [ebp + FdcIn_drive]     ; command over: gate back on
+  movzx   eax, byte [ebp + fdc_in_drive]     ; command over: gate back on
   call    fdc_gate_open
   popfd
   ret
 .busy:
-  mov     byte [edi + FdcOut_status], FDC_ST_BUSY
+  mov     byte [edi + fdc_out_status], FDC_ST_BUSY
   popfd
   ret
 .hard:
   jmp     .done                             ; status already carries the error
 
-;  fdc_result: collect the result phase, if the controller is offering one.
+;  Collect the result phase when ready.
 fdc_result:
   pushfd
   cli
   mov     dx, FDC_MSR
   in      al, dx
-  mov     [edi + FdcOut_msr], al
+  mov     [edi + fdc_out_msr], al
   and     al, 0xC0
   cmp     al, 0xC0                 ; RQM + DIO: the bytes are waiting
   je      .take
-  mov     al, [edi + FdcOut_msr]
+  mov     al, [edi + fdc_out_msr]
   test    al, 0x10
   jz      .lost
-  mov     byte [edi + FdcOut_status], FDC_ST_BUSY
+  mov     byte [edi + fdc_out_status], FDC_ST_BUSY
   popfd
   ret
 .lost:
-  mov     byte [edi + FdcOut_status], 0xE5
+  mov     byte [edi + fdc_out_status], 0xE5
   jmp     .done
 .take:
   call    drain_result_phase
-  mov     byte [edi + FdcOut_status], FDC_ST_OK
+  mov     byte [edi + fdc_out_status], FDC_ST_OK
 .done:
-  movzx   eax, byte [ebp + FdcIn_drive]     ; command over: gate back on
+  movzx   eax, byte [ebp + fdc_in_drive]     ; command over: gate back on
   call    fdc_gate_open
   popfd
   ret
 
-;  fdc_format_track (EBP = FdcIn*, EDI = FdcOut*)
-;  Lays down one whole track: fresh ID address marks, data address marks,
-;  gaps and CRCs, with every data field set to the filler byte. Runs the FDC
-;  in non-DMA mode.
+;  Format one track in non-DMA mode.
 fdc_format_track:
-  mov     byte [edi + FdcOut_stage], 1
+  mov     byte [edi + fdc_out_stage], 1
   push    esi
   pushfd
   cli
   call    fdc_flush
   jc      .err
-  movzx   eax, byte [ebp + FdcIn_rate]
+  movzx   eax, byte [ebp + fdc_in_rate]
   and     al, 3
   mov     dx, FDC_CCR
   out     dx, al
 
-  ;  DMA gate off: this transfer is programmed I/O.
-  mov     byte [edi + FdcOut_stage], 2
-  movzx   eax, byte [ebp + FdcIn_drive]
+  ;  Programmed I/O needs the DMA gate closed.
+  mov     byte [edi + fdc_out_stage], 2
+  movzx   eax, byte [ebp + fdc_in_drive]
   mov     ebx, 1                        ; motor on, gate off
   call    fdc_set_dor
 
-  mov     byte [edi + FdcOut_stage], 3
+  mov     byte [edi + fdc_out_stage], 3
 
   mov     al, FDC_CMD_SPECIFY
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_spec1]
+  mov     al, [ebp + fdc_in_spec1]
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_spec2]
+  mov     al, [ebp + fdc_in_spec2]
   or      al, 1                    ; ND = 1, non-DMA
   call    fdc_send_byte
   jc      .err
 
-  mov     byte [edi + FdcOut_stage], 5
+  mov     byte [edi + fdc_out_stage], 5
 
   ;  Command phase: 4Dh, (head<<2)|drive, N, SC, GPL, filler.
   mov     al, FDC_CMD_FORMAT
   call    fdc_send_byte
   jc      .err
-  movzx   eax, byte [ebp + FdcIn_drive]
+  movzx   eax, byte [ebp + fdc_in_drive]
   and     al, 3
-  movzx   ebx, byte [ebp + FdcIn_head]
+  movzx   ebx, byte [ebp + fdc_in_head]
   and     bl, 1
   shl     ebx, 2
   or      al, bl
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_size_code]
+  mov     al, [ebp + fdc_in_size_code]
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_sec]         ; SC, sectors per track
+  mov     al, [ebp + fdc_in_sec]         ; SC, sectors per track
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_gpl]
+  mov     al, [ebp + fdc_in_gpl]
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_filler]
+  mov     al, [ebp + fdc_in_filler]
   call    fdc_send_byte
   jc      .err
 
   ;  Execution phase: one C,H,R,N per sector, R counting 1..SC.
-  mov     byte [edi + FdcOut_stage], 6
-  movzx   esi, byte [ebp + FdcIn_sec]
+  mov     byte [edi + fdc_out_stage], 6
+  movzx   esi, byte [ebp + fdc_in_sec]
   or      esi, esi
   jz      .err
   mov     bl, 1                         ; R
 .sector:
-  ;  If the controller gives DIO=1 it has abandoned the command.
+  ;  DIO=1 means the command ended early.
   mov     dx, FDC_MSR
   in      al, dx
   and     al, 0xC0
   cmp     al, 0xC0
   je      .early_result
-  mov     al, [ebp + FdcIn_cyl]         ; C
+  mov     al, [ebp + fdc_in_cyl]         ; C
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_head]        ; H
+  mov     al, [ebp + fdc_in_head]        ; H
   call    fdc_send_byte
   jc      .err
   mov     al, bl                        ; R
   call    fdc_send_byte
   jc      .err
-  mov     al, [ebp + FdcIn_size_code]   ; N
+  mov     al, [ebp + fdc_in_size_code]   ; N
   call    fdc_send_byte
   jc      .err
   inc     bl
   dec     esi
   jnz     .sector
 
-  mov     byte [edi + FdcOut_stage], 7
+  mov     byte [edi + fdc_out_stage], 7
   call    drain_result_phase
   call    .restore_dma
   popfd
@@ -1063,39 +1038,39 @@ fdc_format_track:
   pop     esi
   ret
 .err:
-  ;  Reset the controller.
-  mov     byte [edi + FdcOut_status], 0xE6
+  ;  Abort the partial command.
+  mov     byte [edi + fdc_out_status], 0xE6
   push    edi
   call    fdc_reset
   pop     edi
-  mov     byte [edi + FdcOut_status], 0xE6   ; fdc_reset clears
+  mov     byte [edi + fdc_out_status], 0xE6   ; fdc_reset clears
   call    .restore_dma
   popfd
   pop     esi
   ret
 
-;  Put the controller back the way Windows' driver expects to find it.
+;  Restore the controller for Windows.
 .restore_dma:
   call    fdc_flush
   mov     al, FDC_CMD_SPECIFY
   call    fdc_send_byte
   jc      .gate
-  mov     al, [ebp + FdcIn_spec1]
+  mov     al, [ebp + fdc_in_spec1]
   call    fdc_send_byte
   jc      .gate
-  mov     al, [ebp + FdcIn_spec2]
+  mov     al, [ebp + fdc_in_spec2]
   and     al, 0xFE                 ; ND = 0
   call    fdc_send_byte
 .gate:
-  movzx   eax, byte [ebp + FdcIn_drive]
+  movzx   eax, byte [ebp + fdc_in_drive]
   mov     ebx, 3                   ; same drive, motor on, DMA gate restored
   call    fdc_set_dor
   ret
 
-;  Pad the image to a 4 KB page boundary for clean LE wrapping.
+;  Pad the LE image to a page boundary.
 code_end:
 %if (code_end - ddb_start) > PAGE_SIZE
-  %error "LCOD exceeds its 4 KB page - give it more pages in the object table"
+  %error "LCOD exceeds one page"
 %endif
   align   PAGE_SIZE, db 0
   times   (PAGE_COUNT - 1) * PAGE_SIZE db 0

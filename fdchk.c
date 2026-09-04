@@ -1,10 +1,8 @@
-/*  fdchk -- Copyright (C) 2026 Kamila Szewczyk
-    SPDX-License-Identifier: GPL-3.0-only
+/*  Copyright (C) 2026 Kamila Szewczyk
 
     This program is free software; you can redistribute it and/or modify
-    it under the terms of version 3 of the GNU General Public License as
-    published by the Free Software Foundation.  Version 3 is the only
-    version of that license that applies to this program.
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, version 3.
 
     This program is distributed in the hope that it will be useful,
     but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -17,26 +15,28 @@
 #include "fdchk.h"
 #include <stdarg.h>
 
-App G;
+app G;
 
 void * memset(void * d, int c, size_t n) {
   void * r = d;
-  __asm__ volatile("rep stosb" : "+D"(d), "+c"(n) : "a"(c) : "memory");
+  __asm__ volatile ("rep stosb" : "+D" (d), "+c" (n) : "a" (c) : "memory");
   return r;
 }
+
 void * memcpy(void * d, const void * s, size_t n) {
   void * r = d;
-  __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+  __asm__ volatile ("rep movsb" : "+D" (d), "+S" (s), "+c" (n) : : "memory");
   return r;
 }
+
 int memcmp(const void * a, const void * b, size_t n) {
   int r = 0;
   if (n)
-    __asm__ volatile("repz cmpsb\n\t"
+    __asm__ volatile ("repz cmpsb\n\t"
                      "movzbl -1(%1), %0\n\t"
                      "movzbl -1(%2), %%edx\n\t"
                      "subl %%edx, %0"
-                     : "+a"(r), "+S"(a), "+D"(b), "+c"(n)
+                     : "+a" (r), "+S" (a), "+D" (b), "+c" (n)
                      :
                      : "edx", "cc", "memory");
   return r;
@@ -44,19 +44,20 @@ int memcmp(const void * a, const void * b, size_t n) {
 
 int x_strlen(const char * s) {
   int n = -1;
-  __asm__ volatile("repne scasb"
-                   : "+c"(n), "+D"(s)
-                   : "a"(0)
+  __asm__ volatile ("repne scasb"
+                   : "+c" (n), "+D" (s)
+                   : "a" (0)
                    : "cc", "memory");
   return -n - 2;
 }
+
 char * x_strcpy(char * d, const char * s) {
   char * r = d;
-  __asm__ volatile("1:\tlodsb\n\t"
+  __asm__ volatile ("1:\tlodsb\n\t"
                    "stosb\n\t"
                    "testb %%al, %%al\n\t"
                    "jnz 1b"
-                   : "+S"(s), "+D"(d)
+                   : "+S" (s), "+D" (d)
                    :
                    : "eax", "cc", "memory");
   return r;
@@ -66,7 +67,7 @@ char * x_strcpyn(char * d, const char * s, int n) {
   char * r = d;
   if (n > 0) {
     unsigned c = (unsigned) n - 1;
-    __asm__ volatile("jecxz 2f\n"
+    __asm__ volatile ("jecxz 2f\n"
                      "1:\tlodsb\n\t"
                      "stosb\n\t"
                      "testb %%al, %%al\n\t"
@@ -75,29 +76,29 @@ char * x_strcpyn(char * d, const char * s, int n) {
                      "jnz 1b\n"
                      "2:\tmovb $0, (%%edi)\n"
                      "3:"
-                     : "+S"(s), "+D"(d), "+c"(c)
+                     : "+S" (s), "+D" (d), "+c" (c)
                      :
                      : "eax", "cc", "memory");
   }
   return r;
 }
 
-/*  Minimal printf: '-' and '0' flags, a decimal width, an ignored length
-    modifier, and %c %d %u %x %X %s %%.  */
+/*  Minimal printf: - and 0 flags, width, ignored lengths, and the c, d, i,
+    u, x, X, s, and % conversions.  */
 int x_sprintf(char * out, const char * fmt, ...) {
   char * o = out;
   va_list ap;
   va_start(ap, fmt);
-  for (; *fmt; ++fmt) {
+  for (; *fmt; fmt++) {
     if (*fmt != '%') { *o++ = *fmt; continue; }
     int left = 0, zero = 0, width = 0;
-    for (++fmt; *fmt == '-' || *fmt == '0'; ++fmt) {
+    for (fmt++; *fmt == '-' || *fmt == '0'; fmt++) {
       if (*fmt == '-') left = 1;
       else             zero = 1;
     }
-    for (; *fmt >= '0' && *fmt <= '9'; ++fmt)
+    for (; *fmt >= '0' && *fmt <= '9'; fmt++)
       width = width * 10 + (*fmt - '0');
-    while (*fmt == 'l' || *fmt == 'h') ++fmt;
+    while (*fmt == 'l' || *fmt == 'h') fmt++;
 
     char tmp[33], cbuf[2];
     const char * s = tmp;
@@ -157,12 +158,13 @@ int x_sprintf(char * out, const char * fmt, ...) {
 
 DWORD now_ms(void) { return GetTickCount(); }
 
-/*  <exe-dir>\logs\, created once at startup.  */
+/*  Create <program-directory>\logs.  */
 void init_log_dir(void) {
   char exe[MAX_PATH];
+  char * p;
   GetModuleFileNameA(NULL, exe, MAX_PATH);
   char * last = exe;
-  for (char * p = exe; *p; ++p)
+  for (p = exe; *p; p++)
     if (*p == '\\' || *p == '/') last = p;
   *last = 0;
   wsprintfA(G.log_dir, "%s\\logs", exe);
@@ -193,49 +195,48 @@ void log_write(HANDLE h, const char * s) {
 }
 
 /*  xorshift32 PRNG.  */
-static DWORD g_rng = 0x13579BDFu;
+static DWORD rng_state = 0x13579BDFu;
 DWORD rng_next(void) {
-  DWORD x = g_rng;
+  DWORD x = rng_state;
   x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-  return (g_rng = x);
+  rng_state = x;
+  return x;
 }
-void rng_seed(DWORD s) { g_rng = s ? s : 1; }
+void rng_seed(DWORD s) { rng_state = s ? s : 1; }
 
 /*  GDI objects.  */
 
 static void create_gdi_objects(void) {
-  G.hFont = CreateFontA(-11, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+  G.font = CreateFontA(-11, 0, 0, 0, FW_NORMAL, 0, 0, 0,
       ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
       DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, "MS Sans Serif");
 
-  G.hbrFace     = (HBRUSH) GetSysColorBrush(COLOR_BTNFACE);
-  G.hbrBlack    = (HBRUSH) GetStockObject(BLACK_BRUSH);
-  G.hbrShadow   = CreateSolidBrush(RGB(0x80, 0x80, 0x80));
-  G.hbrUntested = CreateSolidBrush(RGB(0xC0, 0xC0, 0xC0));
-  G.hbrSystem   = CreateSolidBrush(RGB(0x00, 0x80, 0x80));
-  G.hbrBadNew   = CreateSolidBrush(RGB(0xC0, 0x00, 0x00));
-  G.hbrBadOld   = CreateSolidBrush(RGB(0x60, 0x00, 0x00));
-  G.hbrWrite    = CreateSolidBrush(RGB(0x00, 0x00, 0xC0));
-  G.hbrVerify   = CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF));
-  G.hbrWrongCyl = CreateSolidBrush(RGB(0xFF, 0x80, 0x00));
-  G.hbrNoAM     = CreateSolidBrush(RGB(0x80, 0x00, 0x80));
+  G.face_brush = (HBRUSH) GetSysColorBrush(COLOR_BTNFACE);
+  G.black_brush = (HBRUSH) GetStockObject(BLACK_BRUSH);
+  G.shadow_brush = CreateSolidBrush(RGB(0x80, 0x80, 0x80));
+  G.untested_brush = CreateSolidBrush(RGB(0xC0, 0xC0, 0xC0));
+  G.system_brush = CreateSolidBrush(RGB(0x00, 0x80, 0x80));
+  G.bad_new_brush = CreateSolidBrush(RGB(0xC0, 0x00, 0x00));
+  G.bad_old_brush = CreateSolidBrush(RGB(0x60, 0x00, 0x00));
+  G.write_brush = CreateSolidBrush(RGB(0x00, 0x00, 0xC0));
+  G.verify_brush = CreateSolidBrush(RGB(0xFF, 0xFF, 0xFF));
+  G.wrong_cyl_brush = CreateSolidBrush(RGB(0xFF, 0x80, 0x00));
+  G.no_am_brush = CreateSolidBrush(RGB(0x80, 0x00, 0x80));
 
-  /*  Fragmentation palette - four contrasting hues so adjacent files in
-      the FAT visibly separate when fragmented.  */
-  G.hbrData[0] = CreateSolidBrush(RGB(0x40, 0x80, 0xC8));   /*  sky blue  */
-  G.hbrData[1] = CreateSolidBrush(RGB(0x60, 0xA8, 0x60));   /*  forest  */
-  G.hbrData[2] = CreateSolidBrush(RGB(0xC8, 0x90, 0x40));   /*  warm tan  */
-  G.hbrData[3] = CreateSolidBrush(RGB(0x90, 0x60, 0xC0));   /*  purple  */
+  /*  Alternating file-chain colours.  */
+  G.data_brush[0] = CreateSolidBrush(RGB(0x40, 0x80, 0xC8));   /*  sky blue  */
+  G.data_brush[1] = CreateSolidBrush(RGB(0x60, 0xA8, 0x60));   /*  forest  */
+  G.data_brush[2] = CreateSolidBrush(RGB(0xC8, 0x90, 0x40));   /*  warm tan  */
+  G.data_brush[3] = CreateSolidBrush(RGB(0x90, 0x60, 0xC0));   /*  purple  */
 
-  /*  Scan trail - fades from hot yellow to mid grey before the cell
-      settles into its permanent colour.  */
-  G.hbrTrail[0] = CreateSolidBrush(RGB(0xFF, 0xFF, 0x80));
-  G.hbrTrail[1] = CreateSolidBrush(RGB(0xE0, 0xD0, 0x80));
-  G.hbrTrail[2] = CreateSolidBrush(RGB(0xB0, 0xA8, 0x80));
-  G.hbrTrail[3] = CreateSolidBrush(RGB(0x90, 0x90, 0x90));
+  /*  Bright-to-grey scan trail.  */
+  G.trail_brush[0] = CreateSolidBrush(RGB(0xFF, 0xFF, 0x80));
+  G.trail_brush[1] = CreateSolidBrush(RGB(0xE0, 0xD0, 0x80));
+  G.trail_brush[2] = CreateSolidBrush(RGB(0xB0, 0xA8, 0x80));
+  G.trail_brush[3] = CreateSolidBrush(RGB(0x90, 0x90, 0x90));
 
-  G.penShadow = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
-  G.penHilite = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNHIGHLIGHT));
+  G.shadow_pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+  G.highlight_pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNHIGHLIGHT));
 
   G.scan_anim_phase = 0;
   trail_clear();
@@ -243,24 +244,25 @@ static void create_gdi_objects(void) {
 }
 
 static void destroy_gdi_objects(void) {
-  if (G.hFont)      DeleteObject(G.hFont);
-  if (G.hbrShadow)  DeleteObject(G.hbrShadow);
-  if (G.hbrUntested) DeleteObject(G.hbrUntested);
-  if (G.hbrSystem)  DeleteObject(G.hbrSystem);
-  if (G.hbrBadNew)  DeleteObject(G.hbrBadNew);
-  if (G.hbrBadOld)  DeleteObject(G.hbrBadOld);
-  if (G.hbrWrite)   DeleteObject(G.hbrWrite);
-  if (G.hbrVerify)  DeleteObject(G.hbrVerify);
-  if (G.hbrWrongCyl) DeleteObject(G.hbrWrongCyl);
-  if (G.hbrNoAM)    DeleteObject(G.hbrNoAM);
-  for (int i = 0; i < 4; ++i) {
-    if (G.hbrData[i])  DeleteObject(G.hbrData[i]);
-    if (G.hbrTrail[i]) DeleteObject(G.hbrTrail[i]);
-  }
-  if (G.hbrScan)    DeleteObject(G.hbrScan);
-  if (G.hbmScan)    DeleteObject(G.hbmScan);
-  if (G.penShadow)  DeleteObject(G.penShadow);
-  if (G.penHilite)  DeleteObject(G.penHilite);
+  int i;
+  if (G.font) DeleteObject(G.font);
+  if (G.shadow_brush) DeleteObject(G.shadow_brush);
+  if (G.untested_brush) DeleteObject(G.untested_brush);
+  if (G.system_brush) DeleteObject(G.system_brush);
+  if (G.bad_new_brush) DeleteObject(G.bad_new_brush);
+  if (G.bad_old_brush) DeleteObject(G.bad_old_brush);
+  if (G.write_brush) DeleteObject(G.write_brush);
+  if (G.verify_brush) DeleteObject(G.verify_brush);
+  if (G.wrong_cyl_brush) DeleteObject(G.wrong_cyl_brush);
+  if (G.no_am_brush) DeleteObject(G.no_am_brush);
+  Fi(4,
+    if (G.data_brush[i])  DeleteObject(G.data_brush[i]);
+    if (G.trail_brush[i]) DeleteObject(G.trail_brush[i]);
+  );
+  if (G.scan_brush) DeleteObject(G.scan_brush);
+  if (G.scan_bitmap) DeleteObject(G.scan_bitmap);
+  if (G.shadow_pen) DeleteObject(G.shadow_pen);
+  if (G.highlight_pen) DeleteObject(G.highlight_pen);
 }
 
 /*  Main window procedure.  */
@@ -268,12 +270,12 @@ static void destroy_gdi_objects(void) {
 static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   switch (m) {
     case WM_CREATE:
-      G.hMain = h;
-      create_controls(h);
+      G.main = h;
+      ui_create(h);
       return 0;
 
     case WM_SIZE:
-      layout_apply(h);
+      ui_layout(h);
       return 0;
 
     case WM_GETMINMAXINFO: {
@@ -286,33 +288,33 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORBTN:
       SetBkColor((HDC) wp, GetSysColor(COLOR_BTNFACE));
-      return (LRESULT) G.hbrFace;
+      return (LRESULT) G.face_brush;
 
     case WM_ERASEBKGND: {
       RECT r;
       GetClientRect(h, &r);
-      FillRect((HDC) wp, &r, G.hbrFace);
+      FillRect((HDC) wp, &r, G.face_brush);
       return 1;
     }
 
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC hdc = BeginPaint(h, &ps);
-      paint_legend(hdc);
+      ui_paint_legend(hdc);
       EndPaint(h, &ps);
       return 0;
     }
 
     case WM_TIMER:
       if (wp == 1) {
-        /*  refresh the progress bar + status plinth  */
+        /*  Refresh progress and status.  */
         if (G.total_sec > 0) {
           DWORD pct = (G.scanned * 1000u) / (DWORD) G.total_sec;
-          SendMessageA(G.hProgress, PBM_SETPOS, pct, 0);
+          SendMessageA(G.progress, PBM_SETPOS, pct, 0);
         }
-        InvalidateRect(h, &G.rcPlinth, FALSE);
+        InvalidateRect(h, &G.plinth, FALSE);
       } else if (wp == 2) {
-        /*  animate the hatch, age the scan trail  */
+        /*  Animate the scan.  */
         G.scan_anim_phase = (G.scan_anim_phase + 1) & 3;
         update_scan_brush();
         trail_tick();
@@ -323,27 +325,27 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     /*  Alt+mnemonics.  */
     case WM_SYSCHAR: {
       HWND t = NULL;
-      switch (wp | 0x20) {                   /*  fold to lower case  */
-        case 's': t = G.hStandard;   break;
-        case 't': t = G.hThorough;   break;
-        case 'd': t = G.hDiagnostic; break;
-        case 'f': t = G.hChkfs;      break;
-        case 'm': t = G.hAutoFix;    break;
-        case 'b': t = G.hBatch;      break;
-        case 'a': t = G.hStart;      break;
-        case 'p': t = G.hStop;       break;
-        case 'r': t = G.hRecover;    break;
-        case 'o': t = G.hFormat;     break;
-        case 'g': t = G.hDefrag;     break;
-        case 'l': t = G.hLogs;       break;
-        case 'u': t = G.hAbout;      break;
-        case 'c': t = G.hClose;      break;
+      switch (wp | 0x20) {                   /*  ASCII lower case  */
+        case 's': t = G.standard;   break;
+        case 't': t = G.thorough;   break;
+        case 'd': t = G.diagnostic; break;
+        case 'f': t = G.chkfs;      break;
+        case 'm': t = G.auto_fix_button;    break;
+        case 'b': t = G.batch_button;      break;
+        case 'a': t = G.start_button;      break;
+        case 'p': t = G.stop_button;       break;
+        case 'r': t = G.recover_button;    break;
+        case 'o': t = G.format_button;     break;
+        case 'g': t = G.defrag_button;     break;
+        case 'l': t = G.logs_button;       break;
+        case 'u': t = G.about_button;      break;
+        case 'c': t = G.close_button;      break;
         default: break;
       }
       if (t && IsWindowVisible(t) && IsWindowEnabled(t)) {
         SetFocus(t);
         SendMessageA(t, BM_CLICK, 0, 0);
-        return 1;                            /*  handled - see the loop  */
+        return 1;
       }
       break;
     }
@@ -351,39 +353,39 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
       switch (LOWORD(wp)) {
         case IDOK:
-          if (IsWindowEnabled(G.hStart)) start_scan(h);
+          if (IsWindowEnabled(G.start_button)) ui_start_scan(h);
           return 0;
-        case ID_START:   start_scan(h);       return 0;
-        case ID_STOP:    stop_scan(h);        return 0;
-        case ID_RECOVER: do_recover_flow(h);  return 0;
-        case ID_FORMAT:  do_format_flow(h);   return 0;
-        case ID_DEFRAG:  do_defrag_flow(h);   return 0;
-        case ID_LOGS:    do_logs(h);          return 0;
-        case ID_ABOUT:   do_about(h);         return 0;
+        case ID_START:   ui_start_scan(h);       return 0;
+        case ID_STOP:    ui_stop_scan(h);        return 0;
+        case ID_RECOVER: ui_recover(h);  return 0;
+        case ID_FORMAT:  ui_format(h);   return 0;
+        case ID_DEFRAG:  ui_defrag(h);   return 0;
+        case ID_LOGS:    ui_logs(h);          return 0;
+        case ID_ABOUT:   ui_about(h);         return 0;
         case ID_CLOSE:
           if (G.running) {
             InterlockedExchange(&G.closing,   1);
             InterlockedExchange(&G.abort_req, 1);
-            EnableWindow(G.hStart,      FALSE);
-            EnableWindow(G.hStop,       FALSE);
-            EnableWindow(G.hRecover,    FALSE);
-            EnableWindow(G.hFormat,     FALSE);
-            EnableWindow(G.hDefrag,     FALSE);
-            EnableWindow(G.hClose,      FALSE);
-            EnableWindow(G.hAbout,      FALSE);
-            EnableWindow(G.hLogs,       FALSE);
-            EnableWindow(G.hStandard,   FALSE);
-            EnableWindow(G.hThorough,   FALSE);
-            EnableWindow(G.hDiagnostic, FALSE);
-            EnableWindow(G.hChkfs,      FALSE);
-            EnableWindow(G.hAutoFix,    FALSE);
-            EnableWindow(G.hBatch,      FALSE);
-            EnableWindow(G.hDriveA,     FALSE);
-            EnableWindow(G.hDriveB,     FALSE);
+            EnableWindow(G.start_button,      FALSE);
+            EnableWindow(G.stop_button,       FALSE);
+            EnableWindow(G.recover_button,    FALSE);
+            EnableWindow(G.format_button,     FALSE);
+            EnableWindow(G.defrag_button,     FALSE);
+            EnableWindow(G.close_button,      FALSE);
+            EnableWindow(G.about_button,      FALSE);
+            EnableWindow(G.logs_button,       FALSE);
+            EnableWindow(G.standard,   FALSE);
+            EnableWindow(G.thorough,   FALSE);
+            EnableWindow(G.diagnostic, FALSE);
+            EnableWindow(G.chkfs,      FALSE);
+            EnableWindow(G.auto_fix_button,    FALSE);
+            EnableWindow(G.batch_button,      FALSE);
+            EnableWindow(G.drive_a,     FALSE);
+            EnableWindow(G.drive_b,     FALSE);
             HMENU hm = GetSystemMenu(h, FALSE);
             if (hm) EnableMenuItem(hm, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
-            SendMessageA(G.hStatus, SB_SETTEXTA, 2,
-                (LPARAM) "Stopping safely - restoring current sector...");
+            SendMessageA(G.statusbar, SB_SETTEXTA, 2,
+                (LPARAM) "Stopping: writing the original sector data back...");
             SetCursor(LoadCursorA(NULL, MAKEINTRESOURCEA(32514)));  /*  WAIT  */
             return 0;
           }
@@ -395,22 +397,22 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_APP_PROGRESS:
       if (lp > 0) {
         DWORD pct = ((DWORD) wp * 1000u) / (DWORD) lp;
-        SendMessageA(G.hProgress, PBM_SETPOS, pct, 0);
+        SendMessageA(G.progress, PBM_SETPOS, pct, 0);
       }
       return 0;
 
     case WM_APP_REPAINT:
-      grid_calc(G.hGrid);
-      InvalidateRect(G.hGrid, NULL, FALSE);
+      grid_calc(G.grid);
+      InvalidateRect(G.grid, NULL, FALSE);
       return 0;
 
     case WM_APP_DONE:
-      on_done(h);
-      if (G.closing) DestroyWindow(h);   /*  queued close; worker is out  */
+      ui_worker_done(h);
+      if (G.closing) DestroyWindow(h);
       return 0;
 
     case WM_QUERYENDSESSION:
-      /*  Refuse shutdown while writing; signal abort to buy time.  */
+      /*  Block shutdown until the write stops.  */
       if (G.running) {
         InterlockedExchange(&G.abort_req, 1);
         return FALSE;
@@ -418,12 +420,12 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       return TRUE;
 
     case WM_ENDSESSION:
-      if (wp && G.running && G.hThread)
-        WaitForSingleObject(G.hThread, 3000);
+      if (wp && G.running && G.thread)
+        WaitForSingleObject(G.thread, 3000);
       return 0;
 
     case WM_CLOSE:
-      /*  Route Alt-F4 / system-menu X through the safe-abort path.  */
+      /*  Stop the worker before closing.  */
       SendMessageA(h, WM_COMMAND, ID_CLOSE, 0);
       return 0;
 
@@ -433,8 +435,6 @@ static LRESULT CALLBACK main_proc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   }
   return DefWindowProcA(h, m, wp, lp);
 }
-
-/*  Window-class registration and entry point.  */
 
 static ATOM register_classes(HINSTANCE hi) {
   WNDCLASSA wc;
@@ -456,32 +456,31 @@ static ATOM register_classes(HINSTANCE hi) {
   return RegisterClassA(&wc);
 }
 
-/*  Entry point.  */
-void WinMainCRTStartup(void) {
-  G.hInst = GetModuleHandleA(NULL);
+static int run(void) {
+  int i;
+  G.instance = GetModuleHandleA(NULL);
   G.current_sec = -1;
 
-  /*  Heap-allocate large buffers.  */
-  G.state   = (BYTE *)  LocalAlloc(LPTR, MAX_SECTORS);
+  G.state   = (BYTE *) LocalAlloc(LPTR, MAX_SECTORS);
   G.bad_lba = (DWORD *) LocalAlloc(LPTR, MAX_BAD * sizeof(DWORD));
   if (!G.state || !G.bad_lba) ExitProcess(1);
 
   init_log_dir();
 
-  /*  Probe which floppy letters exist so we can hide the absent radio.  */
+  /*  Find the floppy drive letters.  */
   G.has_a = (GetDriveTypeA("A:\\") == DRIVE_REMOVABLE);
   G.has_b = (GetDriveTypeA("B:\\") == DRIVE_REMOVABLE);
 
-  /*  Attach the FDC VxD.  */
+  /*  Load the raw FDC driver.  */
   vxd_open();
   G.drive_type[0] = G.drive_type[1] = DEV_UNKNOWN;
-  for (int i = 0; i < 2; ++i) {
-    DiskHandle d;
+  Fi(2,
+    disk_handle d;
     if (!(i ? G.has_b : G.has_a)) continue;
     if (!disk_open(&d, i)) continue;
     G.drive_type[i] = disk_probe_drive_type(&d);
     disk_close(&d);
-  }
+  );
 
   INITCOMMONCONTROLSEX icc;
   icc.dwSize = sizeof icc;
@@ -489,7 +488,7 @@ void WinMainCRTStartup(void) {
   InitCommonControlsEx(&icc);
 
   create_gdi_objects();
-  register_classes(G.hInst);
+  register_classes(G.instance);
 
   int sw = GetSystemMetrics(SM_CXSCREEN);
   int sh = GetSystemMetrics(SM_CYSCREEN);
@@ -497,26 +496,26 @@ void WinMainCRTStartup(void) {
   RECT rc = { 0, 0, WND_W, WND_H };
   AdjustWindowRect(&rc, style, FALSE);
 
-  HWND hWnd = CreateWindowExA(0, APP_CLASS, APP_NAME " - A:", style,
+  HWND window = CreateWindowExA(0, APP_CLASS, APP_NAME " - A:", style,
       (sw - WND_W) / 2, (sh - WND_H) / 2,
       rc.right - rc.left, rc.bottom - rc.top,
-      NULL, NULL, G.hInst, NULL);
-  if (!hWnd) ExitProcess(1);
+      NULL, NULL, G.instance, NULL);
+  if (!window) ExitProcess(1);
 
-  lstrcpyA(G.status, "Ready.  Insert a floppy disk and click Start.");
+  lstrcpyA(G.status, "Ready. Insert a floppy and click Start.");
 
   {
-    const FloppyGeom * g = geom_for_drive_type(G.drive_type[0]);
+    const floppy_geom * g = geom_for_drive_type(G.drive_type[0]);
     geom_apply(g ? g : geom_for_size(2880));
   }
 
-  ShowWindow(hWnd, SW_SHOW);
-  UpdateWindow(hWnd);
+  ShowWindow(window, SW_SHOW);
+  UpdateWindow(window);
 
   MSG msg;
   while (GetMessageA(&msg, NULL, 0, 0)) {
     HWND active = GetActiveWindow();
-    if (!active) active = hWnd;
+    if (!active) active = window;
     if (msg.message == WM_SYSKEYDOWN && msg.wParam >= 'A' && msg.wParam <= 'Z' &&
         SendMessageA(active, WM_SYSCHAR, msg.wParam, msg.lParam))
       continue;
@@ -528,5 +527,14 @@ void WinMainCRTStartup(void) {
 
   destroy_gdi_objects();
   vxd_close();
-  ExitProcess((UINT) msg.wParam);
+  return (int) msg.wParam;
 }
+
+#ifdef DEBUG
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous,
+                   LPSTR command, int show) {
+  return run();
+}
+#else
+void WinMainCRTStartup(void) { ExitProcess((UINT) run()); }
+#endif

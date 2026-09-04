@@ -1,5 +1,14 @@
 *.o
-*.exe
 *.res
-*.vxd
-fdchk.img
+
+/fdchk.exe
+/fdchk.vxd
+/fdchk.img
+/logs/
+
+*~
+*.orig
+*.rej
+*.bak
+core
+core.*
